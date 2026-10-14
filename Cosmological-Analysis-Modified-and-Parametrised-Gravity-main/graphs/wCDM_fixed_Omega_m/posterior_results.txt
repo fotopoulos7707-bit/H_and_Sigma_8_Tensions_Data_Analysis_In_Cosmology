@@ -1,0 +1,14 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : wCDM_fixed_Omega_m
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    65.6595 |                 0.8226 |                 0.7914
+$w_0$           |    -0.8383 |                 0.0398 |                 0.0436
+==========================================================
