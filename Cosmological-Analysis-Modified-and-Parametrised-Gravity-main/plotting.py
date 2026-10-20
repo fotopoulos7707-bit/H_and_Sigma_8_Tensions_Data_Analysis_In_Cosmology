@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import corner
 
-import models
+import parameterisations
 
 
 def plot_dark_energy_potential(flat_chain, model_name, potential_func, output_dir, run_mode, max_z=2.0):
@@ -68,7 +68,7 @@ def plot_and_save_omega_components(flat_chain, chosen_model_name, output_dir, ru
 
         o1_z, o2_z = [], []
         for zi in z_grid:
-            o1, o2 = models.calculate_omega_components(zi, Omega_0_val, delta_val, alpha_val)
+            o1, o2 = parameterisations.calculate_omega_components(zi, Omega_0_val, delta_val, alpha_val)
             o1_z.append(o1)
             o2_z.append(o2)
         omega1_curves.append(o1_z)

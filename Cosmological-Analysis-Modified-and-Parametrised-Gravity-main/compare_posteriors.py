@@ -2,7 +2,6 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from models import MODEL_REGISTRY
 from main import FIXED_ALPHA
 from main import FIXED_DELTA, RUN_MODE
 
@@ -12,6 +11,8 @@ from main import FIXED_DELTA, RUN_MODE
 #RUN_MODE = "snia+cc+bao+clu"  # "snia" or "joint"
 
 # Add or remove any models you wish to compare here! (Supports 1 to all 6)
+# Entries are run tags: "<parameterisation>" for FR_MODEL="GR", or "<parameterisation>__<fR_model>"
+# for f(R) runs (e.g. "LCDM__power_law").  Note: in f(R) runs the Omega_m column is in anchor units.
 MODELS_TO_COMPARE = ["LCDM", "wCDM"]
 
 # SMOOTHNESS ADJUSTMENT: Decrease this number (e.g., 100, 150) to make curves smoother

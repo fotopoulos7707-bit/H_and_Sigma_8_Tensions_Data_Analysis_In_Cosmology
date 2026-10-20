@@ -1,21 +1,39 @@
 # main.py
+import os
+# One BLAS/OpenMP thread per process.  Must be set BEFORE numpy is imported: with a process pool
+# (N_PROCESSES > 1) multi-threaded BLAS in every worker would oversubscribe the CPU.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
+import multiprocessing
 import numpy as np
 import emcee
 import matplotlib.pyplot as plt
-import os
 
 import data_loader as dl
-import models
-from models import MODEL_REGISTRY
-from likelihood import make_log_posterior
+import fR
+from run_config import get_run_config
+from likelihood import make_log_posterior, make_background_builder, suggest_alpha_start, suggest_n_start
 from plotting import plot_corner, generate_model_specific_plots
 from results_io import save_histogram_data, write_posterior_summary
 
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
 # ════════════════════════════════════════════════════════════════════════════
-CHOSEN_MODEL = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+PARAMETERISATION = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
+FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
+                         #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
+                         #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
+                         #   "R_log_R"    f = R (1 + alpha ln R)  -> same
+                         # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
+FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
+                         # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
+                         # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
+FR_Z_INIT        = 40.0  # redshift where the parameterisation sets the f(R) initial conditions (must exceed max data z ~2.4;
+                         # larger = more converged but slower; main.py prints a convergence test for f(R) runs)
+FR_OMEGA_M_ANCHOR = 0.3  # f(R) runs only: Omega_m is NOT sampled (degenerate with alpha, see fR.py); this is the gauge value.
+                         # The physical present-day Omega_m is reported as a derived quantity.
 
 # ── Dataset Toggles ─────────────────────────────────────────────────────────
 # Set each to True/False to include or exclude that dataset from the likelihood.
@@ -42,21 +60,32 @@ RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
 # ────────────────────────────────────────────────────────────────────────────
 
 N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
+N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
+                                            # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
+RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
 
 # ════════════════════════════════════════════════════════════════════════════
 # VALIDATE SELECTION & INITIALIZE ARCHITECTURE
 # ════════════════════════════════════════════════════════════════════════════
-model_config = MODEL_REGISTRY[CHOSEN_MODEL]
-E2_func = model_config["E2_func"]
-prior_func = model_config["prior_func"]
+model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
+RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
+n_param_theta = model_config["n_param_theta"]
 
-log_posterior = make_log_posterior(CHOSEN_MODEL, E2_func, prior_func, FIXED_DELTA, FIXED_ALPHA)
+log_posterior = make_log_posterior(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+
+# Picklable, module-level target for the process pool (log_posterior is a closure, which cannot be
+# pickled).  Workers are forked after _PARALLEL_ARGS is set, so they inherit the loaded datasets.
+_PARALLEL_ARGS = None
+def _log_prob(params):
+    return log_posterior(params, *_PARALLEL_ARGS)
 
 # ════════════════════════════════════════════════════════════════════════════
 # MAIN EXECUTION ROUTINE
 # ════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print(f"Initializing MCMC Target: [{CHOSEN_MODEL}] | Active datasets: [{RUN_MODE}]")
+    print(f"Initializing MCMC Target: parameterisation [{PARAMETERISATION}] | f(R) model [{FR_MODEL}] "
+          f"({model_config['fR_description']}) | Active datasets: [{RUN_MODE}]")
 
     # Load Pantheon data only if SNIa is active (Cholesky is expensive and unnecessary otherwise)
     if USE_SNIA:
@@ -70,49 +99,134 @@ if __name__ == "__main__":
     if USE_CLUSTER: hz_datasets.append(dl.load_clustering_data())
 
     ndim = len(model_config["labels"])
+    if RANDOM_SEED is not None:
+        np.random.seed(RANDOM_SEED)
+
+    # With pinned f(R) parameters (e.g. n) the stored alpha start (tuned for the default n) may be
+    # invalid, so choose alpha so that the background is LCDM-like (u(0) ~ 1).  Start point only.
+    if FR_FIXED_PARAMS and FR_MODEL != "GR":
+        free_names = [nm for nm in fR.FR_REGISTRY[FR_MODEL]["param_names"] if nm not in FR_FIXED_PARAMS]
+        if "alpha" in free_names:
+            col = 1 + n_param_theta + free_names.index("alpha")
+            a0 = suggest_alpha_start(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FIXED_DELTA, FIXED_ALPHA,
+                                     FR_Z_INIT, FR_OMEGA_M_ANCHOR, model_config["p0_center"][1:1 + n_param_theta])
+            if a0 is None:
+                raise ValueError(f"No valid background found for FR_FIXED_PARAMS={FR_FIXED_PARAMS}; "
+                                 f"this f(R) model/parameter choice gives no viable expansion history.")
+            model_config["p0_center"][col] = a0
+            model_config["p0_scatter"][col] = 0.05 * abs(a0)
+            print(f"Starting alpha for fixed {FR_FIXED_PARAMS}: {a0:.4g} (u(0) closest to 1; start point only)")
+        if FR_MODEL == "power_law" and "alpha" in FR_FIXED_PARAMS and "n" in free_names:
+            col = 1 + n_param_theta + free_names.index("n")
+            n0 = suggest_n_start(PARAMETERISATION, FR_FIXED_PARAMS, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                 FR_OMEGA_M_ANCHOR, model_config["p0_center"][1:1 + n_param_theta])
+            if n0 is None:
+                raise ValueError(f"No n gives a viable background for FR_FIXED_PARAMS={FR_FIXED_PARAMS}; "
+                                 f"choose a different pinned alpha.")
+            model_config["p0_center"][col] = n0
+            model_config["p0_scatter"][col] = 0.02
+            print(f"Starting n for fixed {FR_FIXED_PARAMS}: {n0:.4g} (u(0) closest to 1; start point only)")
+
     p0 = model_config["p0_center"] + model_config["p0_scatter"] * np.random.standard_normal((N_WALKERS, ndim))
 
-    sampler = emcee.EnsembleSampler(N_WALKERS, ndim, log_posterior,
-                                    args=(z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets))
+    # Fail early with a useful message if the start point has zero probability (e.g. pinned f(R)
+    # parameters that admit no valid expansion history), instead of emcee's generic error.
+    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
+    n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
+    if n_bad:
+        raise ValueError(f"{n_bad}/{N_WALKERS} initial walkers have zero probability for "
+                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}: "
+                         f"no valid background there (solver failure, runaway u(0), or prior/stability violation).")
 
-    print(f"Running Burn-in Loops ({N_BURNIN} steps)...")
-    state = sampler.run_mcmc(p0, N_BURNIN, progress=True)
-    sampler.reset()
+    n_proc = N_PROCESSES
+    if n_proc > 1 and "fork" not in multiprocessing.get_all_start_methods():
+        print("Process pool needs the 'fork' start method (Linux/macOS); running serially.")
+        n_proc = 1
+    if n_proc > 1 and N_WALKERS // 2 < n_proc:
+        print(f"Note: only {N_WALKERS // 2} walkers are updated at a time; {n_proc} processes will not all be busy.")
 
-    print(f"Running Production Chains ({N_STEPS} steps)...")
-    sampler.run_mcmc(state, N_STEPS, progress=True)
+    _PARALLEL_ARGS = _args
+    pool = multiprocessing.get_context("fork").Pool(n_proc) if n_proc > 1 else None
+    if pool is not None:
+        sampler = emcee.EnsembleSampler(N_WALKERS, ndim, _log_prob, pool=pool)
+    else:
+        sampler = emcee.EnsembleSampler(N_WALKERS, ndim, log_posterior, args=_args)
+    if RANDOM_SEED is not None:
+        sampler.random_state = np.random.RandomState(RANDOM_SEED).get_state()
+    print(f"Sampler: {'serial' if pool is None else f'{n_proc} worker processes'}")
+
+    try:
+        print(f"Running Burn-in Loops ({N_BURNIN} steps)...")
+        state = sampler.run_mcmc(p0, N_BURNIN, progress=True)
+        sampler.reset()
+
+        print(f"Running Production Chains ({N_STEPS} steps)...")
+        sampler.run_mcmc(state, N_STEPS, progress=True)
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     # ════════════════════════════════════════════════════════════════════════════
     # DYNAMIC DIRECTORY SETUP FOR INDIVIDUAL MODELS
     # ════════════════════════════════════════════════════════════════════════════
     base_graph_dir = "graphs"
-    model_output_dir = os.path.join(base_graph_dir, CHOSEN_MODEL)
+    model_output_dir = os.path.join(base_graph_dir, RUN_TAG)
     os.makedirs(model_output_dir, exist_ok=True)
     print(f"\nTarget output path successfully mapped to: {model_output_dir}")
 
     flat_chain = sampler.get_chain(flat=True)
-    np.save(f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy", flat_chain)
+    np.save(f"chain_{RUN_TAG}_{RUN_MODE}.npy", flat_chain)
 
     # ════════════════════════════════════════════════════════════════════════════
     # EXPORT NUMERICAL RESULTS TO TEXT FILE & PRINT POSTERIOR SUMMARY
     # ════════════════════════════════════════════════════════════════════════════
-    write_posterior_summary(flat_chain, model_config, CHOSEN_MODEL, RUN_MODE, model_output_dir,
-                             USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA)
+    extra_lines = [f"Parameterisation : {PARAMETERISATION}",
+                   f"f(R) model       : {FR_MODEL}  ({model_config['fR_description']})"]
+    if FR_MODEL != "GR":
+        print("\nRe-solving the f(R) background for a subset of samples (derived quantities)...")
+        build_bg = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                         FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+        derived_lines, _ = fR.derived_summary(flat_chain, build_bg, n_param_theta)
+        anchor_txt = (f"{model_config['omega_m_anchor']}  (gauge value, NOT sampled; alpha is in anchor units)"
+                      if model_config["omega_m_anchor"] is not None else "0.3 (hard-wired in this parameterisation)")
+        if FR_FIXED_PARAMS:
+            extra_lines += ["f(R) pinned params: " + ", ".join(f"{k} = {v:g}" for k, v in FR_FIXED_PARAMS.items()) + "  (NOT sampled)"]
+        extra_lines += [f"FR_Z_INIT        : {FR_Z_INIT}",
+                        f"Omega_m anchor   : {anchor_txt}",
+                        "Derived (H0 above is the true present-day value):"]
+        extra_lines += ["  " + ln for ln in derived_lines]
+
+        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
+        med = np.median(flat_chain, axis=0)
+        build_2x = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA,
+                                           2.0 * FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+        sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
+        if sens is None:
+            extra_lines += ["IC convergence test: background could not be solved at the posterior median"]
+        else:
+            extra_lines += [f"IC convergence test: max|E2(z_init={FR_Z_INIT:g})/E2(z_init={2*FR_Z_INIT:g}) - 1| = {sens:.2e} on z in [0, 2.4]"]
+            if sens > 1e-3:
+                extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
+                                "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
+    write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
+                             USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
+                             extra_lines=extra_lines)
 
     # ════════════════════════════════════════════════════════════════════════════
     # EXECUTE POSTERIOR HISTOGRAM DATA WRITER
     # ════════════════════════════════════════════════════════════════════════════
-    save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, CHOSEN_MODEL, bins=50)
+    save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, RUN_TAG, bins=50)
 
     # ════════════════════════════════════════════════════════════════════════════
     # GENERATE CORNER PLOTS
     # ════════════════════════════════════════════════════════════════════════════
-    plot_corner(flat_chain, model_config["labels"], CHOSEN_MODEL, model_output_dir, RUN_MODE)
+    plot_corner(flat_chain, model_config["labels"], RUN_TAG, model_output_dir, RUN_MODE)
 
     # ════════════════════════════════════════════════════════════════════════════
     # GENERATE COMPONENT OR POTENTIAL TRACES
     # ════════════════════════════════════════════════════════════════════════════
-    generate_model_specific_plots(flat_chain, CHOSEN_MODEL, model_config, model_output_dir, RUN_MODE,
+    generate_model_specific_plots(flat_chain, RUN_TAG, model_config, model_output_dir, RUN_MODE,
                                    FIXED_DELTA, FIXED_ALPHA)
 
     print("\nOpening active interactive figure windows... Close graphics window to exit pipeline.")

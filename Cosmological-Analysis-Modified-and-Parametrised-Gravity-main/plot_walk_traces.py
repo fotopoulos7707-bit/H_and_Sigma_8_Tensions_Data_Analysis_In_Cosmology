@@ -2,16 +2,16 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from models import MODEL_REGISTRY
+from run_config import get_run_config, split_tag
 
-CHOSEN_MODEL = "LCDM"
+CHOSEN_MODEL = "LCDM"   # run tag: "<parameterisation>" or "<parameterisation>__<fR_model>"
 RUN_MODE = "joint"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 npy_file = os.path.join(SCRIPT_DIR, f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy")
 if os.path.exists(npy_file):
     chain = np.load(npy_file)
-    labels = MODEL_REGISTRY[CHOSEN_MODEL]["labels"]
+    labels = get_run_config(*split_tag(CHOSEN_MODEL))["labels"]
     ndim = len(labels)
     
     # Reconstruct separate walker paths

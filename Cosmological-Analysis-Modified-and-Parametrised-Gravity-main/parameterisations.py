@@ -1,4 +1,14 @@
-# models.py
+# parameterisations.py
+"""
+Background-expansion parameterisations E^2(z) = H^2(z)/H0^2 (LCDM, wCDM, CPL, JBP, ...).
+
+With FR_MODEL = "GR" in main.py a parameterisation IS the background, exactly as
+before.  With a modified f(R) model chosen in fR.py, the parameterisation only
+supplies the initial conditions (u = E^2 and du/dlna at FR_Z_INIT) and the
+matter density Omega_m for the f(R) ODE -- see fR.py.
+
+(This file was models.py; MODEL_REGISTRY is now PARAMETERISATION_REGISTRY.)
+"""
 import numpy as np
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -240,9 +250,9 @@ def prior_both_fixed(H0, theta):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# MODEL REGISTRY
+# PARAMETERISATION REGISTRY
 # ════════════════════════════════════════════════════════════════════════════
-# Each entry specifies everything needed to run a model.
+# Each entry specifies everything needed to run a parameterisation.
 #
 # Fields:
 #   description  : one-line physics summary
@@ -252,8 +262,14 @@ def prior_both_fixed(H0, theta):
 #   E2_func      : E²(z, theta_cosmo) or E²(z, theta_cosmo, fixed_params)
 #   prior_func   : log-prior returning 0.0 or -inf
 #   potential_func: optional V(z, theta_cosmo) reconstruction; None if unused
+#   omega_m_func : theta_cosmo -> present-day matter density Omega_m (H0 units).
+#                  Needed to combine the entry with a modified f(R) model.
+#                  None = no standard conserved matter component -> GR only.
+#   omega_m_index: position of Omega_m inside theta_cosmo (None if it is not sampled).
+#                  In f(R) runs Omega_m is held fixed at FR_OMEGA_M_ANCHOR (main.py),
+#                  because it is degenerate with alpha there (see fR.py).
 #
-MODEL_REGISTRY = {
+PARAMETERISATION_REGISTRY = {
 
     "wCDM_fixed_Omega_m": {
         "description"   : "Flat wCDM fixed Omega_m=0.3",
@@ -265,6 +281,8 @@ MODEL_REGISTRY = {
         "potential_func": lambda z, theta: (
             0.5 * (1.0 - theta[0]) * (1.0 + z)**(3.0 * (1.0 + theta[0]))
         ),
+        "omega_m_func"  : lambda theta: 0.3,   # Omega_m is hard-wired to 0.3 in E2_wcdm_fixed_Omega_m
+        "omega_m_index" : None,
     },
 
 
@@ -278,6 +296,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_lcdm,
         "prior_func"    : prior_lcdm,
         "potential_func": None,
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
     "wCDM": {
@@ -292,6 +312,8 @@ MODEL_REGISTRY = {
             0.5 * (1.0 - theta[1]) * (1.0 + z)**(3.0 * (1.0 + theta[1]))
             #            ^^^w0                             ^^^w0
         ),
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
 
@@ -309,6 +331,8 @@ MODEL_REGISTRY = {
             * (1.0 + z)**(3.0 * (1.0 + theta[1] + theta[2]))
             * np.exp(-3.0 * theta[2] * z / (1.0 + z))
         ),
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
     "wowaCDM": {
@@ -319,6 +343,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_wowacdm,
         "prior_func"    : prior_wowacdm,
         "potential_func": None,
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
     "JBP": {
@@ -329,6 +355,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_jbp,
         "prior_func"    : prior_jbp,
         "potential_func": None,
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
     "HDE": {
@@ -339,6 +367,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_hde,
         "prior_func"    : prior_hde,
         "potential_func": None,
+        "omega_m_func"  : lambda theta: theta[0],
+        "omega_m_index" : 0,
     },
 
     "IDE": {
@@ -349,6 +379,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_ide,
         "prior_func"    : prior_ide,
         "potential_func": None,
+        "omega_m_func"  : None,   # interacting: matter is not conserved -> not combinable with f(R)
+        "omega_m_index" : None,
     },
 
     # ── Parametrised H(z) models ─────────────────────────────────────────────
@@ -368,6 +400,8 @@ MODEL_REGISTRY = {
             0.5 * (2.0 - theta[2] / 3.0) * (1.0 + z)**theta[2]
             #              ^^^alpha                    ^^^alpha
         ),
+        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
+        "omega_m_index" : None,
     },
 
     "param_Hubble_fixed_alpha": {
@@ -378,6 +412,8 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_fixed_alpha,
         "prior_func"    : prior_fixed_alpha,
         "potential_func": None,
+        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
+        "omega_m_index" : None,
     },
 
     "Custom_Universal": {
@@ -388,5 +424,7 @@ MODEL_REGISTRY = {
         "E2_func"       : E2_both_fixed,
         "prior_func"    : prior_both_fixed,
         "potential_func": None,
+        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
+        "omega_m_index" : None,
     },
 }

@@ -14,7 +14,8 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model, 
     """
     print("\nExporting 1D Posterior Histogram data files...")
     clean_names = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0",
-                   r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta"}
+                   r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta",
+                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR"}
 
     for i, lbl in enumerate(labels):
         col_data = flat_chain[:, i]
@@ -41,7 +42,7 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model, 
 
 def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, output_dir,
                              use_snia, use_cc, use_bao, use_cluster,
-                             fixed_delta, fixed_alpha):
+                             fixed_delta, fixed_alpha, extra_lines=None):
     """
     Prints the posterior summary table to stdout and writes the same
     information to posterior_results.txt in output_dir.
@@ -76,6 +77,11 @@ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, ou
             f.write(f"Background Fixed Constraints Set for This Run:\n")
             f.write(f"  FIXED_DELTA = {fixed_delta:.4f}\n")
             f.write(f"  FIXED_ALPHA = {fixed_alpha:.4f}\n")
+        if extra_lines:
+            f.write(f"----------------------------------------------------------\n")
+            for ln in extra_lines:
+                f.write(ln + "\n")
+                print(ln)
         f.write(f"==========================================================\n")
 
     print(f"Numerical analysis metrics saved successfully to: {txt_filename}")

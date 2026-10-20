@@ -4,16 +4,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import data_loader as dl
-import models
-from models import MODEL_REGISTRY
-from main import FIXED_DELTA, FIXED_ALPHA, RUN_MODE
+from likelihood import make_background_builder
+from run_config import get_run_config, split_tag
+from main import FIXED_DELTA, FIXED_ALPHA, RUN_MODE, FR_Z_INIT, FR_OMEGA_M_ANCHOR
 
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — CHOOSE MODELS TO VISUALIZE
 # ════════════════════════════════════════════════════════════════════════════
 
 
-# Add the models you want to compare on the physical distance curves
+# Add the models you want to compare on the physical distance curves.
+# Entries are run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law").
 MODELS_TO_PLOT = ["LCDM", "wCDM", "CPL","HDE"]
 
 # Background parameters for custom frameworks (FIXED_DELTA, FIXED_ALPHA) are
@@ -33,30 +34,26 @@ def get_theory_curves(model_name, median_params, z_grid):
     """
     Computes theoretical H(z) and mu(z) curves given a model's best-fit parameters.
     """
+    param_name, fr_model, fr_fixed = split_tag(model_name)
+    n_p = get_run_config(param_name, fr_model, fr_fixed, FR_OMEGA_M_ANCHOR)["n_param_theta"]
     H0_fit = median_params[0]
-    theta_cosmo = tuple(median_params[1:])
-    
-    # Extract structural function mappings
-    config = MODEL_REGISTRY[model_name]
-    E2_base = config["E2_func"]
-    
-    # Map custom model assignments
-    if model_name == "Custom_Universal":
-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_DELTA, FIXED_ALPHA))
-    elif model_name == "param_Hubble_fixed_delta":
-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_DELTA,))
-    elif model_name == "param_Hubble_fixed_alpha":
-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_ALPHA,))
-    else:
-        E2_func = lambda z: E2_base(z, theta_cosmo)
-        
+    theta_p = tuple(median_params[1:1 + n_p])
+    theta_fr = tuple(median_params[1 + n_p:])
+
+    # Same background builder as the likelihood (GR: parameterisation; f(R): ODE solution)
+    bg = make_background_builder(param_name, fr_model, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                 FR_OMEGA_M_ANCHOR, fr_fixed)(theta_p, theta_fr)
+    if bg is None:
+        raise ValueError(f"f(R) background could not be solved for {model_name} at the median parameters.")
+    E2_func = bg.E2
+
     # Calculate H(z) evolution curve
-    H_curve = H0_fit * np.sqrt(np.array([E2_func(zi) for zi in z_grid]))
-    
+    H_curve = H0_fit * np.sqrt(E2_func(z_grid))
+
     # Calculate Luminosity Distance Modulus mu(z) curve
     # Using a dense numerical integration array for exact distance calculation
     fine_z = np.linspace(0.0, max(z_grid) * 1.05, 500)
-    inv_E = 1.0 / np.sqrt(np.array([E2_func(zi) for zi in fine_z]))
+    inv_E = 1.0 / np.sqrt(E2_func(fine_z))
     dz = np.diff(fine_z)
     chi = np.concatenate([[0.0], np.cumsum(0.5 * (inv_E[:-1] + inv_E[1:]) * dz)]) * (dl.C_LIGHT / H0_fit)
     

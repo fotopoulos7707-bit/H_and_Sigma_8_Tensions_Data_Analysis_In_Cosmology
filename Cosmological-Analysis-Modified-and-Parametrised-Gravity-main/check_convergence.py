@@ -1,9 +1,10 @@
 # check_convergence.py
 import os
 import numpy as np
-from models import MODEL_REGISTRY
+from run_config import get_run_config, split_tag
 
 RUN_MODE = "joint"
+# run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law")
 MODELS_TO_CHECK = ["LCDM"]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,7 +16,7 @@ for model_name in MODELS_TO_CHECK:
         continue
         
     chain = np.load(npy_file)
-    labels = MODEL_REGISTRY[model_name]["labels"]
+    labels = get_run_config(*split_tag(model_name))["labels"]
     
     print(f"\nModel: {model_name}")
     print("-" * 40)

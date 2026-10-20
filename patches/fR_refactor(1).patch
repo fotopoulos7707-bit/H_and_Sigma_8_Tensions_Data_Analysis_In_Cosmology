@@ -1,0 +1,1337 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_convergence.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_convergence.py
+index 4347d0a..5648f7f 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_convergence.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_convergence.py
+@@ -1,9 +1,10 @@
+ # check_convergence.py
+ import os
+ import numpy as np
+-from models import MODEL_REGISTRY
++from run_config import get_run_config, split_tag
+ 
+ RUN_MODE = "joint"
++# run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law")
+ MODELS_TO_CHECK = ["LCDM"]
+ 
+ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+@@ -15,7 +16,7 @@ for model_name in MODELS_TO_CHECK:
+         continue
+         
+     chain = np.load(npy_file)
+-    labels = MODEL_REGISTRY[model_name]["labels"]
++    labels = get_run_config(*split_tag(model_name))["labels"]
+     
+     print(f"\nModel: {model_name}")
+     print("-" * 40)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+new file mode 100644
+index 0000000..f3ede17
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+@@ -0,0 +1,77 @@
++# check_fR.py
++"""
++Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
++
++1. Bianchi / rr-equation: kappa p from fR_friedmann.py's closed form must vanish
++   along the solution (matter has p = 0).  Independent test of the tt-based ODE.
++2. Gauge degeneracy: E^2(z) is unchanged when (Omega_m, alpha) are moved along
++   alpha * Omega_m^(n-1) = const  (power law) -> Omega_m must not be sampled.
++3. GR passthrough: FR_MODEL = "GR" returns the parameterisation's own E^2(z).
++4. Initial-condition convergence versus FR_Z_INIT (power law converges; R_log_R does not).
++5. Pinned f(R) parameters (FR_FIXED_PARAMS) give the same background as sampling them.
++"""
++import numpy as np
++
++import fR
++import parameterisations as P
++from likelihood import make_background_builder
++
++OM = 0.3
++E2_lcdm = lambda Om: (lambda z: P.E2_lcdm(z, (Om,)))
++ok_all = True
++def report(name, ok, detail, info=False):
++    global ok_all
++    if not info:
++        ok_all &= bool(ok)
++    print(f"[{'INFO' if info else 'PASS' if ok else 'FAIL'}] {name}: {detail}")
++
++# ── 1. kappa p = 0 along the solution ──────────────────────────────────────────
++for model, theta in [("power_law", (-2.7, 0.29)), ("power_law", (0.01, 1.5)), ("R_log_R", (0.05,))]:
++    d = fR.FR_REGISTRY[model]["derivs"](theta)
++    bg = fR.solve_background(E2_lcdm(OM), OM, d, 10.0, rtol=1e-10)
++    if bg is None:
++        report(f"kappa p [{model} {theta}]", False, "background could not be solved"); continue
++    def state(N):
++        u, v = bg.sol.sol(N); R = 3 * v + 12 * u
++        return u, v, R, fR.R_N_from_matter(d, R, u, 3 * OM * np.exp(-3 * N))
++    worst = 0.0
++    for z in (4.0, 2.0, 1.0, 0.3, 0.1):
++        N, h = -np.log1p(z), 1e-4
++        u, v, R, R_N = state(N)
++        R_NN = (state(N + h)[3] - state(N - h)[3]) / (2 * h)
++        kp, kr = fR.kappa_p(d, R, R_N, R_NN, u, v), fR.kappa_rho(d, R, R_N, u)
++        worst = max(worst, abs(kp / kr))
++    report(f"kappa p/kappa rho [{model} {theta}]", worst < 1e-5, f"max |ratio| = {worst:.1e}  (threshold 1e-5, finite-difference limited)")
++
++# ── 2. gauge degeneracy ───────────────────────────────────────────────────────
++n, s, zs = 0.286, -6.5, np.linspace(0, 2.4, 25)
++curves = []
++for Om in (0.15, 0.3, 0.7):
++    bg = fR.solve_background(E2_lcdm(Om), Om, fR.FR_REGISTRY["power_law"]["derivs"]((s / Om**(n - 1), n)), 10.0)
++    curves.append((bg.E2(zs), Om / bg.u0))
++dev = max(np.max(np.abs(c[0] / curves[0][0] - 1)) for c in curves)
++report("gauge degeneracy [power_law]", dev < 2e-3,
++       f"max dE2/E2 = {dev:.1e} across anchor Omega_m = 0.15..0.7; physical Omega_m/u0 = "
++       f"{', '.join(f'{c[1]:.4f}' for c in curves)}")
++
++# ── 3. GR passthrough ─────────────────────────────────────────────────────────
++bg = make_background_builder("LCDM", "GR", 0.05, 0.17, 40.0)((0.31,), ())
++report("GR passthrough", np.allclose(bg.E2(zs), P.E2_lcdm(zs, (0.31,)), rtol=0, atol=0), "E2(z) identical to parameterisation")
++
++# ── 4. initial-condition convergence ──────────────────────────────────────────
++for model, theta in [("power_law", (-2.7, 0.29)), ("R_log_R", (0.45,))]:
++    mk = lambda zi: make_background_builder("LCDM", model, 0.05, 0.17, zi, OM)
++    sens = [fR.ic_sensitivity(mk(zi), mk(2 * zi), (), theta) for zi in (10.0, 20.0, 40.0)]
++    conv = sens[-1] is not None and sens[-1] < 1e-3
++    report(f"IC convergence [{model} {theta}]", conv,
++           "max|E2(zi)/E2(2zi)-1| for zi=10,20,40: " + ", ".join("fail" if s is None else f"{s:.1e}" for s in sens)
++           + ("" if conv else "   <- NOT converged: results depend on FR_Z_INIT (expected for R_log_R)"),
++           info=(model != "power_law"))
++
++# ── 5. pinned parameters ──────────────────────────────────────────────────────
++free = make_background_builder("LCDM", "power_law", 0.05, 0.17, 40.0, OM)((), (-2.7, 0.29))
++pinned = make_background_builder("LCDM", "power_law", 0.05, 0.17, 40.0, OM, {"n": 0.29})((), (-2.7,))
++report("pinned parameters [power_law n=0.29]", np.array_equal(free.E2(zs), pinned.E2(zs)),
++       "E2(z) identical to the free-parameter build")
++
++print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
+index 1de3a56..e188f62 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
+@@ -2,7 +2,6 @@
+ import os
+ import numpy as np
+ import matplotlib.pyplot as plt
+-from models import MODEL_REGISTRY
+ from main import FIXED_ALPHA
+ from main import FIXED_DELTA, RUN_MODE
+ 
+@@ -12,6 +11,8 @@ from main import FIXED_DELTA, RUN_MODE
+ #RUN_MODE = "snia+cc+bao+clu"  # "snia" or "joint"
+ 
+ # Add or remove any models you wish to compare here! (Supports 1 to all 6)
++# Entries are run tags: "<parameterisation>" for FR_MODEL="GR", or "<parameterisation>__<fR_model>"
++# for f(R) runs (e.g. "LCDM__power_law").  Note: in f(R) runs the Omega_m column is in anchor units.
+ MODELS_TO_COMPARE = ["LCDM", "wCDM"]
+ 
+ # SMOOTHNESS ADJUSTMENT: Decrease this number (e.g., 100, 150) to make curves smoother
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+new file mode 100644
+index 0000000..1827513
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+@@ -0,0 +1,328 @@
++# fR.py
++"""
++Metric f(R) gravity: model registry and background solver.
++
++Choose the model with FR_MODEL in main.py.  The three models are the ones worked
++out symbolically in Modified_Gravity_Models/fR_friedmann.py:
++
++    "GR"         f = R                  (no modification; the parameterisation
++                                         is the background, as in the old pipeline)
++    "power_law"  f = R + alpha R^n      free: alpha, n
++    "R_log_R"    f = R (1 + alpha ln R) free: alpha
++
++HOW THE f(R) MODEL ENTERS THE LIKELIHOOD
++----------------------------------------
++For a modified model the background is NOT taken from the parameterisation.
++Instead H(z) is obtained by integrating the f(R) field equation with matter only.
++The chosen parameterisation only supplies
++    * the initial conditions  u_i = E^2(z_init)  and  u'_i = dE^2/dlna  at z_init,
++    * the matter density Omega_m (via the registry's omega_m_func).
++
++Equations (flat FLRW, signature -+++, N = ln a, ' = d/dN, u = H^2/H0^2,
++all curvatures in units of H0^2, kappa rho_m = 3 Omega_m e^{-3N}):
++
++    R      = 3 u' + 12 u
++    F      = f_R(R),   F' = f_RR(R) R'
++    kappa rho = 3 F u + (f - R F)/2 + 3 u F'        (tt equation, = kappa rho_m)
++    kappa p   = F (R/6 + u) - f/2 - f_RRR u R'^2
++                - f_RR (u R'' + u' R'/2) - 2 u f_RR R'   (rr equation, = 0 for matter)
++
++kappa rho = kappa rho_m is solved for R' = (3u'' + 12u'), giving a 2nd-order ODE
++for u(N).  kappa p = 0 then holds automatically (Bianchi identity); check_fR.py
++verifies this numerically as an independent test of the ODE.
++
++GAUGE FIXING OF Omega_m (important)
++-----------------------------------
++The equation is covariant under R -> lambda^2 R, which maps (Omega_m, alpha) to
++another pair and leaves E^2(z) = u(z)/u(0) unchanged.  For f = R + alpha R^n the
++shape depends only on alpha * Omega_m^(n-1) (checked numerically: identical to
++<1e-3, the residue being the small dark-energy term in the initial conditions).
++Sampling both would give a flat, curved ridge and a meaningless Omega_m posterior.
++Therefore, in f(R) runs the parameterisation's Omega_m is NOT sampled: it is held
++at FR_OMEGA_M_ANCHOR (main.py) and alpha is expressed in those anchor units.  The
++physical present-day matter fraction Omega_m/u(0) is a derived quantity.
++
++NORMALISATION / MEANING OF THE SAMPLED H0
++-----------------------------------------
++The ODE is integrated in "anchor" units (the parameterisation's H0 = 1).  In a
++pure-matter f(R) universe u(N=0) != 1 in general.  The sampled H0 is defined as
++the TRUE present-day Hubble constant:  E^2(z) = u(z)/u(0),  so E^2(0) = 1 and
++H(z) = H0 sqrt(E^2).  Consequently Omega_m (anchor) is a gauge value; the physical
++present-day matter fraction is Omega_m/u(0), reported as a derived quantity after
++the run.  alpha is likewise in anchor units (R measured in units of the anchor H0^2).
++
++LIMITATIONS
++-----------
++* f = R cannot be integrated (f_RR = 0 makes the tt equation a constraint), so
++  "GR" means GR + the parameterisation's dark energy fluid.
++* The parameterisation's dark-energy parameters (w0, wa, ...) enter only through
++  the initial conditions at z_init, where DE is negligible -> they are expected
++  to be almost unconstrained in f(R) runs.  LCDM (Omega_m only) is the natural
++  companion.
++* Stability: f_RR > 0 is imposed in the prior (see each model's prior function).
++* Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
++  a valid starting point if the f(R) model has a GR-like matter era at early times.
++    - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
++      as FR_Z_INIT grows (changes by ~10x per doubling; FR_Z_INIT = 40 gives ~5e-4).
++    - "R_log_R": F = 1 + alpha (ln R + 1) does NOT tend to 1, there is no GR matter-era
++      attractor, and E^2(z) does NOT converge with FR_Z_INIT (10-50% changes found).
++      Its results depend on the arbitrary starting redshift and must not be trusted.
++  main.py prints this convergence test (ic_sensitivity) for every f(R) run.
++"""
++import numpy as np
++from scipy.integrate import solve_ivp
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# PRIOR BOUNDS  (uniform, hard-wall; edit here)
++# ════════════════════════════════════════════════════════════════════════════
++FR_PRIOR_BOUNDS = {
++    "alpha_power": (-10.0, 10.0),
++    "n_power"    : (  0.1,  2.0),
++    "alpha_log"  : (  0.0,  3.0),
++}
++
++def _in(val, key):
++    lo, hi = FR_PRIOR_BOUNDS[key]
++    return lo < val < hi
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# MODEL DEFINITIONS:  derivatives (f, f_R, f_RR, f_RRR) of f(R), R in H0^2 units
++# ════════════════════════════════════════════════════════════════════════════
++def _derivs_power_law(theta):
++    alpha, n = theta
++    return (lambda R: R + alpha * R**n,
++            lambda R: 1.0 + alpha * n * R**(n - 1.0),
++            lambda R: alpha * n * (n - 1.0) * R**(n - 2.0),
++            lambda R: alpha * n * (n - 1.0) * (n - 2.0) * R**(n - 3.0))
++
++def _prior_power_law(theta):
++    alpha, n = theta
++    # f_RR = alpha n (n-1) R^(n-2) > 0 for R > 0  <=>  alpha n (n-1) > 0
++    if _in(alpha, "alpha_power") and _in(n, "n_power") and alpha * n * (n - 1.0) > 0.0:
++        return 0.0
++    return -np.inf
++
++
++def _derivs_R_log_R(theta):
++    alpha, = theta
++    return (lambda R: R * (1.0 + alpha * np.log(R)),
++            lambda R: 1.0 + alpha * (np.log(R) + 1.0),
++            lambda R: alpha / R,
++            lambda R: -alpha / R**2)
++
++def _prior_R_log_R(theta):
++    alpha, = theta
++    # f_RR = alpha / R > 0  <=>  alpha > 0  (alpha_log lower bound is 0)
++    return 0.0 if _in(alpha, "alpha_log") else -np.inf
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# f(R) REGISTRY
++# ════════════════════════════════════════════════════════════════════════════
++#   param_names: names of the f(R) parameters, in order (usable in FR_FIXED_PARAMS)
++#   labels     : LaTeX names of the extra MCMC parameters (appended after the
++#                parameterisation's labels)
++#   p0_center / p0_scatter : walker initialisation for those parameters
++#   prior_func : theta_fR -> 0.0 or -inf
++#   derivs     : theta_fR -> (f, f_R, f_RR, f_RRR);  None for GR
++FR_REGISTRY = {
++    "GR": {
++        "description": "f(R) = R: General Relativity; dark energy comes from the parameterisation",
++        "param_names": [],
++        "labels"     : [],
++        "p0_center"  : np.array([]),
++        "p0_scatter" : np.array([]),
++        "prior_func" : lambda theta: 0.0,
++        "derivs"     : None,
++    },
++    "power_law": {
++        "description": "f(R) = R + alpha R^n",
++        "param_names": ["alpha", "n"],
++        "labels"     : [r"$\alpha_{f(R)}$", r"$n_{f(R)}$"],
++        "p0_center"  : np.array([-2.7, 0.29]),    # ~best fit to SNIa+CC+BAO+clustering; alpha<0, 0<n<1 is the stable branch
++        "p0_scatter" : np.array([ 0.15, 0.01]),
++        "prior_func" : _prior_power_law,
++        "derivs"     : _derivs_power_law,
++    },
++    "R_log_R": {
++        "description": "f(R) = R (1 + alpha ln R)",
++        "param_names": ["alpha"],
++        "labels"     : [r"$\alpha_{f(R)}$"],
++        "p0_center"  : np.array([0.45]),
++        "p0_scatter" : np.array([0.05]),
++        "prior_func" : _prior_R_log_R,
++        "derivs"     : _derivs_R_log_R,
++    },
++}
++
++
++def make_fr_expander(fr_model, fixed=None):
++    """
++    Returns (expand, sampled_idx).  `fixed` = {param_name: value} pins f(R) parameters
++    (FR_FIXED_PARAMS in main.py); they are removed from the MCMC vector.
++    expand(theta_sampled) -> full f(R) parameter tuple, in param_names order.
++    """
++    fixed = dict(fixed or {})
++    names = FR_REGISTRY[fr_model]["param_names"]
++    unknown = set(fixed) - set(names)
++    if unknown:
++        raise ValueError(f"FR_FIXED_PARAMS has {sorted(unknown)}, but f(R) model '{fr_model}' "
++                         f"only has parameters {names}.")
++    sampled_idx = [i for i, nm in enumerate(names) if nm not in fixed]
++
++    def expand(theta_sampled):
++        it = iter(theta_sampled)
++        return tuple(fixed[nm] if nm in fixed else next(it) for nm in names)
++    return expand, sampled_idx
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# kappa rho, kappa p  (closed forms from fR_friedmann.py, flat, N-derivatives)
++# ════════════════════════════════════════════════════════════════════════════
++def kappa_rho(derivs, R, R_N, u):
++    """tt equation: kappa*rho = 3 F u + (f - R F)/2 + 3 u f_RR R'."""
++    f, fR, fRR, _ = derivs
++    return 3.0 * fR(R) * u + 0.5 * (f(R) - R * fR(R)) + 3.0 * u * fRR(R) * R_N
++
++def kappa_p(derivs, R, R_N, R_NN, u, u_N):
++    """rr equation: kappa*p (Rdot = H R', Rddot = u R'' + u' R'/2)."""
++    f, fR, fRR, fRRR = derivs
++    return (fR(R) * (R / 6.0 + u) - 0.5 * f(R)
++            - fRRR(R) * u * R_N**2
++            - fRR(R) * (u * R_NN + 0.5 * u_N * R_N)
++            - 2.0 * u * fRR(R) * R_N)
++
++def R_N_from_matter(derivs, R, u, kappa_rho_m):
++    """Invert kappa_rho(R, R', u) = kappa_rho_m for R' (kappa_rho is linear in R')."""
++    fRR = derivs[2]
++    rho_at_zero = kappa_rho(derivs, R, 0.0, u)
++    return (kappa_rho_m - rho_at_zero) / (3.0 * u * fRR(R))
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# BACKGROUND OBJECT + SOLVER
++# ════════════════════════════════════════════════════════════════════════════
++class Background:
++    """E2(z): vectorised E^2(z) = H^2/H0^2 with E^2(0)=1.  u0: u(N=0) in anchor units.
++    omega_m: anchor Omega_m used for the integration (None for GR backgrounds).
++    sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR); for diagnostics."""
++    def __init__(self, E2, u0=1.0, omega_m=None, sol=None):
++        self.E2 = E2
++        self.u0 = u0
++        self.omega_m = omega_m
++        self.sol = sol
++
++
++MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter space blow past this
++U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(0) outside ~(0.003, 30): runaway
++
++
++def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
++    """
++    Integrate the f(R) background from z_init to z=0 (see module docstring).
++    Returns a Background, or None if the integration fails or leaves the
++    physical domain (u <= 0, R <= 0, blow-up, non-finite output, too many function
++    evaluations (stiff), or u(0) outside U0_RANGE (runaway solution)).
++    """
++    N_i = -np.log1p(z_init)
++    h = 1e-4
++    u_i = float(E2_param(z_init))
++    v_i = -(1.0 + z_init) * (float(E2_param(z_init + h)) - float(E2_param(z_init - h))) / (2.0 * h)
++    R_i = 3.0 * v_i + 12.0 * u_i
++    if not (np.isfinite(u_i) and np.isfinite(v_i) and u_i > 0.0 and R_i > 0.0):
++        return None
++
++    R_FLOOR = 1e-12          # keeps rhs finite inside a step; events catch the violation
++
++    class _TooStiff(Exception):
++        pass
++    n_eval = [0]
++
++    def rhs(N, y):
++        n_eval[0] += 1
++        if n_eval[0] > MAX_RHS_EVALS:
++            raise _TooStiff
++        u, v = y
++        R = max(3.0 * v + 12.0 * u, R_FLOOR)
++        u = max(u, R_FLOOR)
++        R_N = R_N_from_matter(derivs, R, u, 3.0 * Omega_m * np.exp(-3.0 * N))
++        return [v, R_N / 3.0 - 4.0 * v]          # R' = 3u'' + 12u'
++
++    def leaves_domain(N, y):                      # terminal: u<=0 or R<=0
++        return min(y[0], 3.0 * y[1] + 12.0 * y[0]) - 1e-8
++    leaves_domain.terminal, leaves_domain.direction = True, -1
++
++    def blows_up(N, y):                           # terminal: |u'/u| huge
++        return 1e3 - abs(y[1]) / max(abs(y[0]), R_FLOOR)
++    blows_up.terminal, blows_up.direction = True, -1
++
++    try:
++        with np.errstate(all="ignore"):
++            sol = solve_ivp(rhs, (N_i, 0.0), [u_i, v_i], method="LSODA", rtol=rtol, atol=1e-10,
++                            dense_output=True, events=(leaves_domain, blows_up))
++    except Exception:
++        return None
++    if sol.status != 0 or not np.all(np.isfinite(sol.y)):
++        return None
++    u0 = float(sol.y[0, -1])
++    if not (np.isfinite(u0) and U0_RANGE[0] < u0 < U0_RANGE[1]):
++        return None
++
++    def E2(z):
++        z = np.asarray(z, dtype=float)
++        if np.any(z > z_init):
++            raise ValueError(f"E2(z) requested at z={z.max():.3g} > FR_Z_INIT={z_init}; "
++                             f"raise FR_Z_INIT in main.py.")
++        out = sol.sol(-np.log1p(z))[0] / u0
++        return out if z.ndim else float(out)
++    return Background(E2, u0, Omega_m, sol)
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# DERIVED QUANTITIES FOR THE POSTERIOR SUMMARY
++# ════════════════════════════════════════════════════════════════════════════
++def derived_summary(flat_chain, build_background, n_param_theta, n_samples=300, seed=0):
++    """
++    Re-solves the background for a random subset of chain samples and returns
++    (lines, derived) where derived = {name: array}.  Reports the physical
++    present-day matter fraction Omega_m/u(0) and the anchor Hubble constant
++    H0/sqrt(u(0)) (the parameterisation's H0 that sets the initial conditions).
++    n_param_theta = number of SAMPLED parameterisation parameters (excl. H0).
++    """
++    rng = np.random.default_rng(seed)
++    idx = rng.choice(len(flat_chain), size=min(n_samples, len(flat_chain)), replace=False)
++    Om_phys, H_anchor = [], []
++    for i in idx:
++        p = flat_chain[i]
++        theta_p = tuple(p[1:1 + n_param_theta])
++        theta_fr = tuple(p[1 + n_param_theta:])
++        bg = build_background(theta_p, theta_fr)
++        if bg is None:
++            continue
++        Om_phys.append(bg.omega_m / bg.u0)
++        H_anchor.append(p[0] / np.sqrt(bg.u0))
++    derived = {"Omega_m (present, physical) = Omega_m/u(0)": np.array(Om_phys),
++               "H0 (anchor, sets ICs) = H0/sqrt(u(0))": np.array(H_anchor)}
++    lines = []
++    for name, arr in derived.items():
++        if len(arr) == 0:
++            lines.append(f"{name}: no valid samples")
++            continue
++        med, lo, hi = np.median(arr), np.percentile(arr, 16), np.percentile(arr, 84)
++        lines.append(f"{name}: {med:.4f} +{hi - med:.4f} / -{med - lo:.4f}   ({len(arr)} samples)")
++    return lines, derived
++
++
++def ic_sensitivity(build_a, build_b, theta_p, theta_fr, z_max=2.4, n=100):
++    """
++    max |E2_a(z)/E2_b(z) - 1| for z in [0, z_max], where a and b are backgrounds built
++    with different FR_Z_INIT (e.g. z_init and 2 z_init).  None if either solve fails.
++    Small -> the result is independent of the starting redshift.
++    """
++    a, b = build_a(theta_p, theta_fr), build_b(theta_p, theta_fr)
++    if a is None or b is None:
++        return None
++    z = np.linspace(0.0, z_max, n)
++    return float(np.max(np.abs(a.E2(z) / b.E2(z) - 1.0)))
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+index 6c3ea11..cb253e9 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+@@ -3,18 +3,32 @@
+ Distance-modulus theory curve and the combined log-posterior used by emcee.
+ Kept separate from main.py so the sampler's objective function can be
+ imported/tested independently of the run configuration and plotting code.
++
++Parameter vector layout (emcee):  [H0, *theta_parameterisation, *theta_fR]
++    H0      : present-day Hubble constant (E^2(0) = 1 always; see fR.py)
++    theta_p : parameterisation parameters (parameterisations.py); in f(R) runs
++              Omega_m is excluded (held at FR_OMEGA_M_ANCHOR, see fR.py)
++    theta_fR: extra f(R) parameters (fR.py); empty for FR_MODEL = "GR"
+ """
+ import numpy as np
+ from scipy.linalg import cho_solve
+ 
+ import data_loader as dl
++import parameterisations as P
++import fR
+ 
+ 
+-def mu_theory(z_arr, theta_cosmo, H0, active_E2, n_grid=600):
+-    """Theoretical SNe Ia distance modulus mu(z) for a given E(z)^2 model."""
++def mu_theory(z_arr, E2_of_z, H0, n_grid=600):
++    """
++    Theoretical SNe Ia distance modulus mu(z) for a vectorised E^2(z).
++    Returns None if E^2 is non-finite or non-positive anywhere on the grid.
++    """
+     z_max = z_arr.max() * 1.05
+     z_grid = np.linspace(0.0, z_max, n_grid)
+-    inv_E = 1.0 / np.sqrt(np.array([active_E2(zi, theta_cosmo) for zi in z_grid]))
++    E2 = np.asarray(E2_of_z(z_grid), dtype=float)
++    if not (np.all(np.isfinite(E2)) and np.all(E2 > 0.0)):
++        return None
++    inv_E = 1.0 / np.sqrt(E2)
+     dz = np.diff(z_grid)
+     chi = np.concatenate([[0.0], np.cumsum(0.5 * (inv_E[:-1] + inv_E[1:]) * dz)]) * (dl.C_LIGHT / H0)
+     return 5.0 * np.log10((1.0 + z_arr) * np.interp(z_arr, z_grid, chi)) + 25.0
+@@ -22,9 +36,9 @@ def mu_theory(z_arr, theta_cosmo, H0, active_E2, n_grid=600):
+ 
+ def resolve_active_E2(chosen_model, E2_func, fixed_delta, fixed_alpha):
+     """
+-    Returns the E2 function actually used in the likelihood, accounting for
+-    models that fix one or more shape parameters (delta, alpha) rather than
+-    sampling them.
++    Returns the E2(z, theta) function actually used for a parameterisation,
++    accounting for models that fix one or more shape parameters (delta, alpha)
++    rather than sampling them.
+     """
+     if chosen_model == "Custom_Universal":
+         return lambda z, t: E2_func(z, t, (fixed_delta, fixed_alpha))
+@@ -36,27 +50,98 @@ def resolve_active_E2(chosen_model, E2_func, fixed_delta, fixed_alpha):
+         return E2_func
+ 
+ 
+-def make_log_posterior(chosen_model, E2_func, prior_func, fixed_delta, fixed_alpha):
++def _get_fr_config(fr_model):
++    if fr_model not in fR.FR_REGISTRY:
++        raise ValueError(f"Unknown f(R) model '{fr_model}'. Options: {list(fR.FR_REGISTRY)}")
++    return fR.FR_REGISTRY[fr_model]
++
++
++def make_theta_expander(parameterisation, fr_model, omega_m_anchor):
++    """
++    Returns (expand, n_sampled): expand(theta_sampled) -> full theta_cosmo tuple.
++    In f(R) runs Omega_m is not sampled (gauge-fixed, see fR.py); expand() puts
++    FR_OMEGA_M_ANCHOR back at the position the parameterisation expects.
++    """
++    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
++    n_full = len(pcfg["labels"]) - 1
++    idx = pcfg["omega_m_index"]
++    if fr_model == "GR" or idx is None:
++        return (lambda th: tuple(th)), n_full
++    return (lambda th: tuple(th[:idx]) + (omega_m_anchor,) + tuple(th[idx:])), n_full - 1
++
++
++def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
++                            omega_m_anchor=0.3, fr_fixed=None):
+     """
+-    Builds a log_posterior(params, ...) closure bound to a specific model
+-    configuration, so main.py doesn't need to pass CHOSEN_MODEL/E2_func/etc.
++    Returns build(theta_p, theta_fR) -> fR.Background (or None if the f(R)
++    integration fails).  theta_p / theta_fR = SAMPLED parameters only (fr_fixed
++    parameters are inserted here).  Shared by
++    the likelihood and the plotting scripts so the background used for plots is
++    always the one used in the fit.
++    """
++    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
++    active_E2 = resolve_active_E2(parameterisation, pcfg["E2_func"], fixed_delta, fixed_alpha)
++    fcfg = _get_fr_config(fr_model)
++    derivs_of = fcfg["derivs"]
++    omega_m_func = pcfg["omega_m_func"]
++    expand, _ = make_theta_expander(parameterisation, fr_model, omega_m_anchor)
++    expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
++
++    if derivs_of is None:                       # GR: parameterisation IS the background
++        def build(theta_p, theta_fr=()):
++            theta = expand(theta_p)
++            return fR.Background(lambda z: active_E2(z, theta), 1.0)
++        return build
++
++    if omega_m_func is None:
++        raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter "
++                         f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
++
++    def build(theta_p, theta_fr):
++        theta = expand(theta_p)
++        return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
++                                   derivs_of(expand_fr(theta_fr)), fr_z_init)
++    return build
++
++
++def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
++                       omega_m_anchor=0.3, fr_fixed=None):
++    """
++    Builds a log_posterior(params, ...) closure bound to a specific
++    (parameterisation, f(R) model) pair, so main.py doesn't need to pass them
+     through emcee's args on every call.
+     """
+-    active_E2 = resolve_active_E2(chosen_model, E2_func, fixed_delta, fixed_alpha)
++    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
++    fcfg = _get_fr_config(fr_model)
++    prior_func = pcfg["prior_func"]
++    fr_prior = fcfg["prior_func"]
++    expand, n_p = make_theta_expander(parameterisation, fr_model, omega_m_anchor)
++    expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
++    build = make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
++                                    omega_m_anchor, fr_fixed)
+ 
+     def log_posterior(params, z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets):
+         H0 = params[0]
+-        theta_cosmo = tuple(params[1:])
++        theta_p = tuple(params[1:1 + n_p])
++        theta_fr = tuple(params[1 + n_p:])
+ 
+-        lp = prior_func(H0, theta_cosmo)
++        lp = prior_func(H0, expand(theta_p)) + fr_prior(expand_fr(theta_fr))
+         if not np.isfinite(lp):
+             return -np.inf
+ 
++        bg = build(theta_p, theta_fr)
++        if bg is None:
++            return -np.inf
++        E2_of_z = bg.E2
++
+         ll = 0.0
+ 
+         # SNIa Pantheon+SH0ES Marginalized Likelihood
+         if mu_obs is not None:
+-            residual = mu_obs - mu_theory(z_cmb, theta_cosmo, H0, active_E2)
++            mu_th = mu_theory(z_cmb, E2_of_z, H0)
++            if mu_th is None:
++                return -np.inf
++            residual = mu_obs - mu_th
+             Cinv_r = cho_solve(C_fac, residual, check_finite=False)
+             a = float(residual @ Cinv_r)
+             b = float(Cinv_ones @ residual)
+@@ -64,9 +149,66 @@ def make_log_posterior(chosen_model, E2_func, prior_func, fixed_delta, fixed_alp
+ 
+         # H(z) Cosmic Chronometers, BAO, & Clustering Likelihoods
+         for (z_arr, H_obs, sigma_H) in hz_datasets:
+-            H_th = H0 * np.sqrt(np.array([active_E2(z, theta_cosmo) for z in z_arr]))
+-            ll += -0.5 * np.sum(((H_obs - H_th) / sigma_H) ** 2)
++            E2 = np.asarray(E2_of_z(z_arr), dtype=float)
++            if not (np.all(np.isfinite(E2)) and np.all(E2 > 0.0)):
++                return -np.inf
++            ll += -0.5 * np.sum(((H_obs - H0 * np.sqrt(E2)) / sigma_H) ** 2)
+ 
+         return lp + ll
+ 
+-    return log_posterior
+\ No newline at end of file
++    return log_posterior
++
++
++def suggest_alpha_start(parameterisation, fr_model, fr_fixed, fixed_delta, fixed_alpha, fr_z_init,
++                        omega_m_anchor, theta_p_center, n_scan=60):
++    """
++    Starting value for alpha when other f(R) parameters (e.g. n) are pinned: the
++    alpha, on the sign branch where f_RR > 0, whose background has u(0) closest to 1
++    (physical Omega_m = Omega_m/u(0) ~ the anchor, i.e. a LCDM-like expansion).
++    Only a starting point for the walkers, not a fit.  Returns None if no scanned
++    alpha (|alpha| in 1e-3..10) gives a background with u(0) within a factor 2 of 1,
++    i.e. the pinned parameters admit no LCDM-like matter-only expansion.
++    """
++    names = fR.FR_REGISTRY[fr_model]["param_names"]
++    if "alpha" not in names or "alpha" in (fr_fixed or {}):
++        return None
++    if fr_model == "power_law":
++        n = (fr_fixed or {}).get("n")
++        if n is None:
++            return None
++        sign = np.sign(n * (n - 1.0))
++        if sign == 0:
++            return None
++    else:
++        sign = 1.0
++    build = make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
++                                    omega_m_anchor, fr_fixed)
++    best, best_gap = None, np.inf
++    for mag in np.logspace(-3, 1, n_scan):
++        alpha = sign * mag
++        bg = build(tuple(theta_p_center), (alpha,))
++        if bg is not None and abs(np.log(bg.u0)) < best_gap:
++            best, best_gap = alpha, abs(np.log(bg.u0))
++    return best if best_gap < np.log(2.0) else None
++
++
++def suggest_n_start(parameterisation, fr_fixed, fixed_delta, fixed_alpha, fr_z_init,
++                    omega_m_anchor, theta_p_center, n_scan=60):
++    """
++    power_law with alpha pinned and n sampled: n on the stable branch (alpha<0 -> 0<n<1,
++    alpha>0 -> 1<n<2) whose background has u(0) closest to 1.  Start point only.
++    Returns None if no scanned n gives u(0) within a factor 2 of 1.
++    """
++    alpha = (fr_fixed or {}).get("alpha")
++    if alpha is None or alpha == 0:
++        return None
++    lo, hi = fR.FR_PRIOR_BOUNDS["n_power"]
++    cand = np.linspace(max(lo, 0.0) + 0.01, 0.99, n_scan) if alpha < 0 else np.linspace(1.01, hi - 0.01, n_scan)
++    build = make_background_builder(parameterisation, "power_law", fixed_delta, fixed_alpha, fr_z_init,
++                                    omega_m_anchor, fr_fixed)
++    best, best_gap = None, np.inf
++    for n in cand:
++        bg = build(tuple(theta_p_center), (n,))
++        if bg is not None and abs(np.log(bg.u0)) < best_gap:
++            best, best_gap = n, abs(np.log(bg.u0))
++    return best if best_gap < np.log(2.0) else None
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+index 035aa5a..44a519e 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+@@ -1,21 +1,39 @@
+ # main.py
++import os
++# One BLAS/OpenMP thread per process.  Must be set BEFORE numpy is imported: with a process pool
++# (N_PROCESSES > 1) multi-threaded BLAS in every worker would oversubscribe the CPU.
++for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
++    os.environ.setdefault(_v, "1")
++
++import multiprocessing
+ import numpy as np
+ import emcee
+ import matplotlib.pyplot as plt
+-import os
+ 
+ import data_loader as dl
+-import models
+-from models import MODEL_REGISTRY
+-from likelihood import make_log_posterior
++import fR
++from run_config import get_run_config
++from likelihood import make_log_posterior, make_background_builder, suggest_alpha_start, suggest_n_start
+ from plotting import plot_corner, generate_model_specific_plots
+ from results_io import save_histogram_data, write_posterior_summary
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+ # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
+ # ════════════════════════════════════════════════════════════════════════════
+-CHOSEN_MODEL = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
++PARAMETERISATION = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
++FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
++                         #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
++                         #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
++                         #   "R_log_R"    f = R (1 + alpha ln R)  -> same
++                         # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
++FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
++                         # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
++                         # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
++FR_Z_INIT        = 40.0  # redshift where the parameterisation sets the f(R) initial conditions (must exceed max data z ~2.4;
++                         # larger = more converged but slower; main.py prints a convergence test for f(R) runs)
++FR_OMEGA_M_ANCHOR = 0.3  # f(R) runs only: Omega_m is NOT sampled (degenerate with alpha, see fR.py); this is the gauge value.
++                         # The physical present-day Omega_m is reported as a derived quantity.
+ 
+ # ── Dataset Toggles ─────────────────────────────────────────────────────────
+ # Set each to True/False to include or exclude that dataset from the likelihood.
+@@ -42,21 +60,32 @@ RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
+ # ────────────────────────────────────────────────────────────────────────────
+ 
+ N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
++N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
++                                            # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
++RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+ # VALIDATE SELECTION & INITIALIZE ARCHITECTURE
+ # ════════════════════════════════════════════════════════════════════════════
+-model_config = MODEL_REGISTRY[CHOSEN_MODEL]
+-E2_func = model_config["E2_func"]
+-prior_func = model_config["prior_func"]
++model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
++RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
++n_param_theta = model_config["n_param_theta"]
++
++log_posterior = make_log_posterior(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+ 
+-log_posterior = make_log_posterior(CHOSEN_MODEL, E2_func, prior_func, FIXED_DELTA, FIXED_ALPHA)
++# Picklable, module-level target for the process pool (log_posterior is a closure, which cannot be
++# pickled).  Workers are forked after _PARALLEL_ARGS is set, so they inherit the loaded datasets.
++_PARALLEL_ARGS = None
++def _log_prob(params):
++    return log_posterior(params, *_PARALLEL_ARGS)
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+ # MAIN EXECUTION ROUTINE
+ # ════════════════════════════════════════════════════════════════════════════
+ if __name__ == "__main__":
+-    print(f"Initializing MCMC Target: [{CHOSEN_MODEL}] | Active datasets: [{RUN_MODE}]")
++    print(f"Initializing MCMC Target: parameterisation [{PARAMETERISATION}] | f(R) model [{FR_MODEL}] "
++          f"({model_config['fR_description']}) | Active datasets: [{RUN_MODE}]")
+ 
+     # Load Pantheon data only if SNIa is active (Cholesky is expensive and unnecessary otherwise)
+     if USE_SNIA:
+@@ -70,49 +99,134 @@ if __name__ == "__main__":
+     if USE_CLUSTER: hz_datasets.append(dl.load_clustering_data())
+ 
+     ndim = len(model_config["labels"])
+-    p0 = model_config["p0_center"] + model_config["p0_scatter"] * np.random.standard_normal((N_WALKERS, ndim))
+-
+-    sampler = emcee.EnsembleSampler(N_WALKERS, ndim, log_posterior,
+-                                    args=(z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets))
++    if RANDOM_SEED is not None:
++        np.random.seed(RANDOM_SEED)
++
++    # With pinned f(R) parameters (e.g. n) the stored alpha start (tuned for the default n) may be
++    # invalid, so choose alpha so that the background is LCDM-like (u(0) ~ 1).  Start point only.
++    if FR_FIXED_PARAMS and FR_MODEL != "GR":
++        free_names = [nm for nm in fR.FR_REGISTRY[FR_MODEL]["param_names"] if nm not in FR_FIXED_PARAMS]
++        if "alpha" in free_names:
++            col = 1 + n_param_theta + free_names.index("alpha")
++            a0 = suggest_alpha_start(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FIXED_DELTA, FIXED_ALPHA,
++                                     FR_Z_INIT, FR_OMEGA_M_ANCHOR, model_config["p0_center"][1:1 + n_param_theta])
++            if a0 is None:
++                raise ValueError(f"No valid background found for FR_FIXED_PARAMS={FR_FIXED_PARAMS}; "
++                                 f"this f(R) model/parameter choice gives no viable expansion history.")
++            model_config["p0_center"][col] = a0
++            model_config["p0_scatter"][col] = 0.05 * abs(a0)
++            print(f"Starting alpha for fixed {FR_FIXED_PARAMS}: {a0:.4g} (u(0) closest to 1; start point only)")
++        if FR_MODEL == "power_law" and "alpha" in FR_FIXED_PARAMS and "n" in free_names:
++            col = 1 + n_param_theta + free_names.index("n")
++            n0 = suggest_n_start(PARAMETERISATION, FR_FIXED_PARAMS, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                 FR_OMEGA_M_ANCHOR, model_config["p0_center"][1:1 + n_param_theta])
++            if n0 is None:
++                raise ValueError(f"No n gives a viable background for FR_FIXED_PARAMS={FR_FIXED_PARAMS}; "
++                                 f"choose a different pinned alpha.")
++            model_config["p0_center"][col] = n0
++            model_config["p0_scatter"][col] = 0.02
++            print(f"Starting n for fixed {FR_FIXED_PARAMS}: {n0:.4g} (u(0) closest to 1; start point only)")
+ 
+-    print(f"Running Burn-in Loops ({N_BURNIN} steps)...")
+-    state = sampler.run_mcmc(p0, N_BURNIN, progress=True)
+-    sampler.reset()
++    p0 = model_config["p0_center"] + model_config["p0_scatter"] * np.random.standard_normal((N_WALKERS, ndim))
+ 
+-    print(f"Running Production Chains ({N_STEPS} steps)...")
+-    sampler.run_mcmc(state, N_STEPS, progress=True)
++    # Fail early with a useful message if the start point has zero probability (e.g. pinned f(R)
++    # parameters that admit no valid expansion history), instead of emcee's generic error.
++    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
++    n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
++    if n_bad:
++        raise ValueError(f"{n_bad}/{N_WALKERS} initial walkers have zero probability for "
++                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}: "
++                         f"no valid background there (solver failure, runaway u(0), or prior/stability violation).")
++
++    n_proc = N_PROCESSES
++    if n_proc > 1 and "fork" not in multiprocessing.get_all_start_methods():
++        print("Process pool needs the 'fork' start method (Linux/macOS); running serially.")
++        n_proc = 1
++    if n_proc > 1 and N_WALKERS // 2 < n_proc:
++        print(f"Note: only {N_WALKERS // 2} walkers are updated at a time; {n_proc} processes will not all be busy.")
++
++    _PARALLEL_ARGS = _args
++    pool = multiprocessing.get_context("fork").Pool(n_proc) if n_proc > 1 else None
++    if pool is not None:
++        sampler = emcee.EnsembleSampler(N_WALKERS, ndim, _log_prob, pool=pool)
++    else:
++        sampler = emcee.EnsembleSampler(N_WALKERS, ndim, log_posterior, args=_args)
++    if RANDOM_SEED is not None:
++        sampler.random_state = np.random.RandomState(RANDOM_SEED).get_state()
++    print(f"Sampler: {'serial' if pool is None else f'{n_proc} worker processes'}")
++
++    try:
++        print(f"Running Burn-in Loops ({N_BURNIN} steps)...")
++        state = sampler.run_mcmc(p0, N_BURNIN, progress=True)
++        sampler.reset()
++
++        print(f"Running Production Chains ({N_STEPS} steps)...")
++        sampler.run_mcmc(state, N_STEPS, progress=True)
++    finally:
++        if pool is not None:
++            pool.close()
++            pool.join()
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+     # DYNAMIC DIRECTORY SETUP FOR INDIVIDUAL MODELS
+     # ════════════════════════════════════════════════════════════════════════════
+     base_graph_dir = "graphs"
+-    model_output_dir = os.path.join(base_graph_dir, CHOSEN_MODEL)
++    model_output_dir = os.path.join(base_graph_dir, RUN_TAG)
+     os.makedirs(model_output_dir, exist_ok=True)
+     print(f"\nTarget output path successfully mapped to: {model_output_dir}")
+ 
+     flat_chain = sampler.get_chain(flat=True)
+-    np.save(f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy", flat_chain)
++    np.save(f"chain_{RUN_TAG}_{RUN_MODE}.npy", flat_chain)
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+     # EXPORT NUMERICAL RESULTS TO TEXT FILE & PRINT POSTERIOR SUMMARY
+     # ════════════════════════════════════════════════════════════════════════════
+-    write_posterior_summary(flat_chain, model_config, CHOSEN_MODEL, RUN_MODE, model_output_dir,
+-                             USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA)
++    extra_lines = [f"Parameterisation : {PARAMETERISATION}",
++                   f"f(R) model       : {FR_MODEL}  ({model_config['fR_description']})"]
++    if FR_MODEL != "GR":
++        print("\nRe-solving the f(R) background for a subset of samples (derived quantities)...")
++        build_bg = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                         FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
++        derived_lines, _ = fR.derived_summary(flat_chain, build_bg, n_param_theta)
++        anchor_txt = (f"{model_config['omega_m_anchor']}  (gauge value, NOT sampled; alpha is in anchor units)"
++                      if model_config["omega_m_anchor"] is not None else "0.3 (hard-wired in this parameterisation)")
++        if FR_FIXED_PARAMS:
++            extra_lines += ["f(R) pinned params: " + ", ".join(f"{k} = {v:g}" for k, v in FR_FIXED_PARAMS.items()) + "  (NOT sampled)"]
++        extra_lines += [f"FR_Z_INIT        : {FR_Z_INIT}",
++                        f"Omega_m anchor   : {anchor_txt}",
++                        "Derived (H0 above is the true present-day value):"]
++        extra_lines += ["  " + ln for ln in derived_lines]
++
++        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
++        med = np.median(flat_chain, axis=0)
++        build_2x = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA,
++                                           2.0 * FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
++        sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
++        if sens is None:
++            extra_lines += ["IC convergence test: background could not be solved at the posterior median"]
++        else:
++            extra_lines += [f"IC convergence test: max|E2(z_init={FR_Z_INIT:g})/E2(z_init={2*FR_Z_INIT:g}) - 1| = {sens:.2e} on z in [0, 2.4]"]
++            if sens > 1e-3:
++                extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
++                                "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
++    write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
++                             USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
++                             extra_lines=extra_lines)
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+     # EXECUTE POSTERIOR HISTOGRAM DATA WRITER
+     # ════════════════════════════════════════════════════════════════════════════
+-    save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, CHOSEN_MODEL, bins=50)
++    save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, RUN_TAG, bins=50)
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+     # GENERATE CORNER PLOTS
+     # ════════════════════════════════════════════════════════════════════════════
+-    plot_corner(flat_chain, model_config["labels"], CHOSEN_MODEL, model_output_dir, RUN_MODE)
++    plot_corner(flat_chain, model_config["labels"], RUN_TAG, model_output_dir, RUN_MODE)
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+     # GENERATE COMPONENT OR POTENTIAL TRACES
+     # ════════════════════════════════════════════════════════════════════════════
+-    generate_model_specific_plots(flat_chain, CHOSEN_MODEL, model_config, model_output_dir, RUN_MODE,
++    generate_model_specific_plots(flat_chain, RUN_TAG, model_config, model_output_dir, RUN_MODE,
+                                    FIXED_DELTA, FIXED_ALPHA)
+ 
+     print("\nOpening active interactive figure windows... Close graphics window to exit pipeline.")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/models.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/parameterisations.py
+similarity index 89%
+rename from Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/models.py
+rename to Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/parameterisations.py
+index 8261c9e..aaf560e 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/models.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/parameterisations.py
+@@ -1,4 +1,14 @@
+-# models.py
++# parameterisations.py
++"""
++Background-expansion parameterisations E^2(z) = H^2(z)/H0^2 (LCDM, wCDM, CPL, JBP, ...).
++
++With FR_MODEL = "GR" in main.py a parameterisation IS the background, exactly as
++before.  With a modified f(R) model chosen in fR.py, the parameterisation only
++supplies the initial conditions (u = E^2 and du/dlna at FR_Z_INIT) and the
++matter density Omega_m for the f(R) ODE -- see fR.py.
++
++(This file was models.py; MODEL_REGISTRY is now PARAMETERISATION_REGISTRY.)
++"""
+ import numpy as np
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+@@ -240,9 +250,9 @@ def prior_both_fixed(H0, theta):
+ 
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+-# MODEL REGISTRY
++# PARAMETERISATION REGISTRY
+ # ════════════════════════════════════════════════════════════════════════════
+-# Each entry specifies everything needed to run a model.
++# Each entry specifies everything needed to run a parameterisation.
+ #
+ # Fields:
+ #   description  : one-line physics summary
+@@ -252,8 +262,14 @@ def prior_both_fixed(H0, theta):
+ #   E2_func      : E²(z, theta_cosmo) or E²(z, theta_cosmo, fixed_params)
+ #   prior_func   : log-prior returning 0.0 or -inf
+ #   potential_func: optional V(z, theta_cosmo) reconstruction; None if unused
++#   omega_m_func : theta_cosmo -> present-day matter density Omega_m (H0 units).
++#                  Needed to combine the entry with a modified f(R) model.
++#                  None = no standard conserved matter component -> GR only.
++#   omega_m_index: position of Omega_m inside theta_cosmo (None if it is not sampled).
++#                  In f(R) runs Omega_m is held fixed at FR_OMEGA_M_ANCHOR (main.py),
++#                  because it is degenerate with alpha there (see fR.py).
+ #
+-MODEL_REGISTRY = {
++PARAMETERISATION_REGISTRY = {
+ 
+     "wCDM_fixed_Omega_m": {
+         "description"   : "Flat wCDM fixed Omega_m=0.3",
+@@ -265,6 +281,8 @@ MODEL_REGISTRY = {
+         "potential_func": lambda z, theta: (
+             0.5 * (1.0 - theta[0]) * (1.0 + z)**(3.0 * (1.0 + theta[0]))
+         ),
++        "omega_m_func"  : lambda theta: 0.3,   # Omega_m is hard-wired to 0.3 in E2_wcdm_fixed_Omega_m
++        "omega_m_index" : None,
+     },
+ 
+ 
+@@ -278,6 +296,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_lcdm,
+         "prior_func"    : prior_lcdm,
+         "potential_func": None,
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+     "wCDM": {
+@@ -292,6 +312,8 @@ MODEL_REGISTRY = {
+             0.5 * (1.0 - theta[1]) * (1.0 + z)**(3.0 * (1.0 + theta[1]))
+             #            ^^^w0                             ^^^w0
+         ),
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+ 
+@@ -309,6 +331,8 @@ MODEL_REGISTRY = {
+             * (1.0 + z)**(3.0 * (1.0 + theta[1] + theta[2]))
+             * np.exp(-3.0 * theta[2] * z / (1.0 + z))
+         ),
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+     "wowaCDM": {
+@@ -319,6 +343,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_wowacdm,
+         "prior_func"    : prior_wowacdm,
+         "potential_func": None,
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+     "JBP": {
+@@ -329,6 +355,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_jbp,
+         "prior_func"    : prior_jbp,
+         "potential_func": None,
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+     "HDE": {
+@@ -339,6 +367,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_hde,
+         "prior_func"    : prior_hde,
+         "potential_func": None,
++        "omega_m_func"  : lambda theta: theta[0],
++        "omega_m_index" : 0,
+     },
+ 
+     "IDE": {
+@@ -349,6 +379,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_ide,
+         "prior_func"    : prior_ide,
+         "potential_func": None,
++        "omega_m_func"  : None,   # interacting: matter is not conserved -> not combinable with f(R)
++        "omega_m_index" : None,
+     },
+ 
+     # ── Parametrised H(z) models ─────────────────────────────────────────────
+@@ -368,6 +400,8 @@ MODEL_REGISTRY = {
+             0.5 * (2.0 - theta[2] / 3.0) * (1.0 + z)**theta[2]
+             #              ^^^alpha                    ^^^alpha
+         ),
++        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
++        "omega_m_index" : None,
+     },
+ 
+     "param_Hubble_fixed_alpha": {
+@@ -378,6 +412,8 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_fixed_alpha,
+         "prior_func"    : prior_fixed_alpha,
+         "potential_func": None,
++        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
++        "omega_m_index" : None,
+     },
+ 
+     "Custom_Universal": {
+@@ -388,5 +424,7 @@ MODEL_REGISTRY = {
+         "E2_func"       : E2_both_fixed,
+         "prior_func"    : prior_both_fixed,
+         "potential_func": None,
++        "omega_m_func"  : None,   # matter-like term scales as (1+z)^(3+delta) -> not combinable with f(R)
++        "omega_m_index" : None,
+     },
+ }
+\ No newline at end of file
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
+index 66bc188..084a092 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
+@@ -4,16 +4,17 @@ import numpy as np
+ import matplotlib.pyplot as plt
+ 
+ import data_loader as dl
+-import models
+-from models import MODEL_REGISTRY
+-from main import FIXED_DELTA, FIXED_ALPHA, RUN_MODE
++from likelihood import make_background_builder
++from run_config import get_run_config, split_tag
++from main import FIXED_DELTA, FIXED_ALPHA, RUN_MODE, FR_Z_INIT, FR_OMEGA_M_ANCHOR
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+ # SWITCHBOARD CONFIGURATION — CHOOSE MODELS TO VISUALIZE
+ # ════════════════════════════════════════════════════════════════════════════
+ 
+ 
+-# Add the models you want to compare on the physical distance curves
++# Add the models you want to compare on the physical distance curves.
++# Entries are run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law").
+ MODELS_TO_PLOT = ["LCDM", "wCDM", "CPL","HDE"]
+ 
+ # Background parameters for custom frameworks (FIXED_DELTA, FIXED_ALPHA) are
+@@ -33,30 +34,26 @@ def get_theory_curves(model_name, median_params, z_grid):
+     """
+     Computes theoretical H(z) and mu(z) curves given a model's best-fit parameters.
+     """
++    param_name, fr_model, fr_fixed = split_tag(model_name)
++    n_p = get_run_config(param_name, fr_model, fr_fixed, FR_OMEGA_M_ANCHOR)["n_param_theta"]
+     H0_fit = median_params[0]
+-    theta_cosmo = tuple(median_params[1:])
+-    
+-    # Extract structural function mappings
+-    config = MODEL_REGISTRY[model_name]
+-    E2_base = config["E2_func"]
+-    
+-    # Map custom model assignments
+-    if model_name == "Custom_Universal":
+-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_DELTA, FIXED_ALPHA))
+-    elif model_name == "param_Hubble_fixed_delta":
+-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_DELTA,))
+-    elif model_name == "param_Hubble_fixed_alpha":
+-        E2_func = lambda z: E2_base(z, theta_cosmo, (FIXED_ALPHA,))
+-    else:
+-        E2_func = lambda z: E2_base(z, theta_cosmo)
+-        
++    theta_p = tuple(median_params[1:1 + n_p])
++    theta_fr = tuple(median_params[1 + n_p:])
++
++    # Same background builder as the likelihood (GR: parameterisation; f(R): ODE solution)
++    bg = make_background_builder(param_name, fr_model, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                 FR_OMEGA_M_ANCHOR, fr_fixed)(theta_p, theta_fr)
++    if bg is None:
++        raise ValueError(f"f(R) background could not be solved for {model_name} at the median parameters.")
++    E2_func = bg.E2
++
+     # Calculate H(z) evolution curve
+-    H_curve = H0_fit * np.sqrt(np.array([E2_func(zi) for zi in z_grid]))
+-    
++    H_curve = H0_fit * np.sqrt(E2_func(z_grid))
++
+     # Calculate Luminosity Distance Modulus mu(z) curve
+     # Using a dense numerical integration array for exact distance calculation
+     fine_z = np.linspace(0.0, max(z_grid) * 1.05, 500)
+-    inv_E = 1.0 / np.sqrt(np.array([E2_func(zi) for zi in fine_z]))
++    inv_E = 1.0 / np.sqrt(E2_func(fine_z))
+     dz = np.diff(fine_z)
+     chi = np.concatenate([[0.0], np.cumsum(0.5 * (inv_E[:-1] + inv_E[1:]) * dz)]) * (dl.C_LIGHT / H0_fit)
+     
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
+index 0bc8f0b..2808bd0 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
+@@ -2,16 +2,16 @@
+ import os
+ import numpy as np
+ import matplotlib.pyplot as plt
+-from models import MODEL_REGISTRY
++from run_config import get_run_config, split_tag
+ 
+-CHOSEN_MODEL = "LCDM"
++CHOSEN_MODEL = "LCDM"   # run tag: "<parameterisation>" or "<parameterisation>__<fR_model>"
+ RUN_MODE = "joint"
+ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ 
+ npy_file = os.path.join(SCRIPT_DIR, f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy")
+ if os.path.exists(npy_file):
+     chain = np.load(npy_file)
+-    labels = MODEL_REGISTRY[CHOSEN_MODEL]["labels"]
++    labels = get_run_config(*split_tag(CHOSEN_MODEL))["labels"]
+     ndim = len(labels)
+     
+     # Reconstruct separate walker paths
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
+index 832a914..fe5b1d1 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
+@@ -8,7 +8,7 @@ import numpy as np
+ import matplotlib.pyplot as plt
+ import corner
+ 
+-import models
++import parameterisations
+ 
+ 
+ def plot_dark_energy_potential(flat_chain, model_name, potential_func, output_dir, run_mode, max_z=2.0):
+@@ -68,7 +68,7 @@ def plot_and_save_omega_components(flat_chain, chosen_model_name, output_dir, ru
+ 
+         o1_z, o2_z = [], []
+         for zi in z_grid:
+-            o1, o2 = models.calculate_omega_components(zi, Omega_0_val, delta_val, alpha_val)
++            o1, o2 = parameterisations.calculate_omega_components(zi, Omega_0_val, delta_val, alpha_val)
+             o1_z.append(o1)
+             o2_z.append(o2)
+         omega1_curves.append(o1_z)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
+index a359b41..bbbaf0b 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
+@@ -14,7 +14,8 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model,
+     """
+     print("\nExporting 1D Posterior Histogram data files...")
+     clean_names = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0",
+-                   r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta"}
++                   r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta",
++                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR"}
+ 
+     for i, lbl in enumerate(labels):
+         col_data = flat_chain[:, i]
+@@ -41,7 +42,7 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model,
+ 
+ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, output_dir,
+                              use_snia, use_cc, use_bao, use_cluster,
+-                             fixed_delta, fixed_alpha):
++                             fixed_delta, fixed_alpha, extra_lines=None):
+     """
+     Prints the posterior summary table to stdout and writes the same
+     information to posterior_results.txt in output_dir.
+@@ -76,6 +77,11 @@ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, ou
+             f.write(f"Background Fixed Constraints Set for This Run:\n")
+             f.write(f"  FIXED_DELTA = {fixed_delta:.4f}\n")
+             f.write(f"  FIXED_ALPHA = {fixed_alpha:.4f}\n")
++        if extra_lines:
++            f.write(f"----------------------------------------------------------\n")
++            for ln in extra_lines:
++                f.write(ln + "\n")
++                print(ln)
+         f.write(f"==========================================================\n")
+ 
+     print(f"Numerical analysis metrics saved successfully to: {txt_filename}")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+new file mode 100644
+index 0000000..814a7f4
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+@@ -0,0 +1,97 @@
++# run_config.py
++"""
++Combines a parameterisation (parameterisations.py) and an f(R) model (fR.py)
++into the single run configuration used by main.py and the analysis scripts.
++
++Run tag (used in chain / output file names):
++    FR_MODEL == "GR"  ->  "<parameterisation>"            (unchanged from the old pipeline)
++    otherwise         ->  "<parameterisation>__<fR_model>"
++    pinned f(R) parameters are appended: "LCDM__power_law__n=0.5"
++"""
++import numpy as np
++
++import parameterisations as P
++import fR
++
++TAG_SEP = "__"
++
++
++def make_tag(parameterisation, fr_model, fr_fixed=None):
++    if fr_model == "GR":
++        return parameterisation
++    tag = f"{parameterisation}{TAG_SEP}{fr_model}"
++    for k, v in sorted((fr_fixed or {}).items()):
++        tag += f"{TAG_SEP}{k}={v:g}"
++    return tag
++
++
++def split_tag(tag):
++    """Inverse of make_tag: returns (parameterisation, fr_model, fr_fixed dict)."""
++    parts = tag.split(TAG_SEP)
++    if len(parts) == 1:
++        return parts[0], "GR", {}
++    fixed = {}
++    for p in parts[2:]:
++        k, v = p.split("=")
++        fixed[k] = float(v)
++    return parts[0], parts[1], fixed
++
++
++def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3):
++    """
++    Validated, combined configuration.  Keys: everything in the parameterisation
++    entry, with labels / p0_center / p0_scatter extended by the f(R) parameters, plus
++        n_param_theta : number of parameterisation parameters (excluding H0)
++        parameterisation, fR_model, tag, fR_description
++    """
++    if parameterisation not in P.PARAMETERISATION_REGISTRY:
++        raise ValueError(f"Unknown PARAMETERISATION '{parameterisation}'. "
++                         f"Options: {list(P.PARAMETERISATION_REGISTRY)}")
++    if fr_model not in fR.FR_REGISTRY:
++        raise ValueError(f"Unknown FR_MODEL '{fr_model}'. Options: {list(fR.FR_REGISTRY)}")
++
++    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
++    fcfg = fR.FR_REGISTRY[fr_model]
++    fr_fixed = dict(fr_fixed or {})
++    _, fr_sampled_idx = fR.make_fr_expander(fr_model, fr_fixed)      # validates the names
++    for nm, val in fr_fixed.items():
++        if fr_model == "power_law" and nm == "n" and not (fR.FR_PRIOR_BOUNDS["n_power"][0] < val < fR.FR_PRIOR_BOUNDS["n_power"][1] and val != 1.0):
++            raise ValueError(f"Fixed n={val} is outside the prior range {fR.FR_PRIOR_BOUNDS['n_power']} or equals 1 (f = (1+alpha)R, i.e. GR).")
++
++    names = fcfg["param_names"]
++    if fr_fixed and all(nm in fr_fixed for nm in (names if fr_model == "power_law" else ["alpha"] if fr_model == "R_log_R" else [])):
++        full = tuple(fr_fixed[nm] for nm in names)
++        if not np.isfinite(fcfg["prior_func"](full)):
++            rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
++                    "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)"}[fr_model]
++            raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
++                             f"Bounds: {fR.FR_PRIOR_BOUNDS}")
++
++    if fr_model != "GR" and pcfg["omega_m_func"] is None:
++        ok = [k for k, v in P.PARAMETERISATION_REGISTRY.items() if v["omega_m_func"] is not None]
++        raise ValueError(f"PARAMETERISATION '{parameterisation}' has no standard conserved-matter "
++                         f"component, so it cannot supply initial conditions for FR_MODEL "
++                         f"'{fr_model}'. Compatible parameterisations: {ok}")
++
++    labels = list(pcfg["labels"])
++    p0_center, p0_scatter = np.array(pcfg["p0_center"], dtype=float), np.array(pcfg["p0_scatter"], dtype=float)
++    idx = pcfg["omega_m_index"]
++    if fr_model != "GR" and idx is not None:
++        lo, hi = P.PRIOR_BOUNDS["Omega_m"]
++        if not lo < omega_m_anchor < hi:
++            raise ValueError(f"FR_OMEGA_M_ANCHOR={omega_m_anchor} outside the Omega_m prior ({lo}, {hi}).")
++        k = 1 + idx                                  # column 0 is H0
++        labels.pop(k); p0_center = np.delete(p0_center, k); p0_scatter = np.delete(p0_scatter, k)
++
++    cfg = dict(pcfg)
++    cfg["labels"] = labels + [fcfg["labels"][i] for i in fr_sampled_idx]
++    cfg["p0_center"] = np.concatenate([p0_center, fcfg["p0_center"][fr_sampled_idx]])
++    cfg["p0_scatter"] = np.concatenate([p0_scatter, fcfg["p0_scatter"][fr_sampled_idx]])
++    cfg["fR_fixed"] = fr_fixed
++    cfg["n_param_theta"] = len(labels) - 1           # sampled parameterisation parameters
++    cfg["omega_m_anchor"] = omega_m_anchor if (fr_model != "GR" and idx is not None) else None
++    if fr_model != "GR":
++        cfg["potential_func"] = None      # scalar-field potential reconstruction is a GR+DE notion
++    cfg.update(parameterisation=parameterisation, fR_model=fr_model,
++               tag=make_tag(parameterisation, fr_model, fr_fixed), fR_description=fcfg["description"])
++    return cfg
