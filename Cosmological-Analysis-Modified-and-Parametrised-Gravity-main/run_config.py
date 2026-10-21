@@ -55,7 +55,7 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
     fr_fixed = dict(fr_fixed or {})
     _, fr_sampled_idx = fR.make_fr_expander(fr_model, fr_fixed)      # validates the names
     for nm, val in fr_fixed.items():
-        if fr_model == "power_law" and nm == "n" and not (fR.FR_PRIOR_BOUNDS["n_power"][0] < val < fR.FR_PRIOR_BOUNDS["n_power"][1] and val != 1.0):
+        if fr_model == "power_law" and nm == "n" and not (fR.FR_PRIOR_BOUNDS["n_power"][0] <= val <= fR.FR_PRIOR_BOUNDS["n_power"][1] and val != 1.0):
             raise ValueError(f"Fixed n={val} is outside the prior range {fR.FR_PRIOR_BOUNDS['n_power']} or equals 1 (f = (1+alpha)R, i.e. GR).")
 
     names = fcfg["param_names"]

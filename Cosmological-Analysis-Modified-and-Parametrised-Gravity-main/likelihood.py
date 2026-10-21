@@ -88,19 +88,20 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
     expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
 
     if derivs_of is None:                       # GR: parameterisation IS the background
-        def build(theta_p, theta_fr=()):
+        def build(theta_p, theta_fr=(), return_reason=False):
             theta = expand(theta_p)
-            return fR.Background(lambda z: active_E2(z, theta), 1.0)
+            bg = fR.Background(lambda z: active_E2(z, theta), 1.0)
+            return (bg, None) if return_reason else bg
         return build
 
     if omega_m_func is None:
         raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter "
                          f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
 
-    def build(theta_p, theta_fr):
+    def build(theta_p, theta_fr, return_reason=False):
         theta = expand(theta_p)
         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
-                                   derivs_of(expand_fr(theta_fr)), fr_z_init)
+                                   derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
     return build
 
 

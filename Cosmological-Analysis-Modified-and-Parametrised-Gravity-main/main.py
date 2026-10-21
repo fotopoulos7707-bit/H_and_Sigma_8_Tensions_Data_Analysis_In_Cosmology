@@ -13,21 +13,22 @@ import matplotlib.pyplot as plt
 import data_loader as dl
 import fR
 from run_config import get_run_config
-from likelihood import make_log_posterior, make_background_builder, suggest_alpha_start, suggest_n_start
+from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
+                        suggest_alpha_start, suggest_n_start)
 from plotting import plot_corner, generate_model_specific_plots
 from results_io import save_histogram_data, write_posterior_summary
 
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
 # ════════════════════════════════════════════════════════════════════════════
-PARAMETERISATION = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "power_law"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
                          # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
-FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
+FR_FIXED_PARAMS  = {"n": 0.5, "alpha": -0.01}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
                          # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
                          # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
 FR_Z_INIT        = 40.0  # redshift where the parameterisation sets the f(R) initial conditions (must exceed max data z ~2.4;
@@ -59,7 +60,7 @@ if not _active:
 RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
 # ────────────────────────────────────────────────────────────────────────────
 
-N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
+N_WALKERS, N_BURNIN, N_STEPS = 64, 100, 500
 N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
                                             # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
 RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
@@ -134,9 +135,22 @@ if __name__ == "__main__":
     _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
     n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
     if n_bad:
+        # Say WHY, using the first bad walker (prior/stability, or the f(R) solver's own reason).
+        w = next(w for w in p0 if not np.isfinite(log_posterior(w, *_args)))
+        th_p, th_fr = tuple(w[1:1 + n_param_theta]), tuple(w[1 + n_param_theta:])
+        expand_p, _ = make_theta_expander(PARAMETERISATION, FR_MODEL, FR_OMEGA_M_ANCHOR)
+        expand_fr, _ = fR.make_fr_expander(FR_MODEL, FR_FIXED_PARAMS)
+        prior_ok = np.isfinite(model_config["prior_func"](w[0], expand_p(th_p))) and \
+                   np.isfinite(fR.FR_REGISTRY[FR_MODEL]["prior_func"](expand_fr(th_fr)))
+        if not prior_ok:
+            reason = "the starting point is outside the prior / violates the f(R) stability condition"
+        else:
+            _, reason = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                                FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)(th_p, th_fr, return_reason=True)
+            reason = reason or "log-likelihood is not finite (non-positive or non-finite E^2(z))"
         raise ValueError(f"{n_bad}/{N_WALKERS} initial walkers have zero probability for "
-                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}: "
-                         f"no valid background there (solver failure, runaway u(0), or prior/stability violation).")
+                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}.\n"
+                         f"Reason (first bad walker): {reason}.")
 
     n_proc = N_PROCESSES
     if n_proc > 1 and "fork" not in multiprocessing.get_all_start_methods():

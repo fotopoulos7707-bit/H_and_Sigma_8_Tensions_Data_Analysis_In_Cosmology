@@ -84,7 +84,7 @@ FR_PRIOR_BOUNDS = {
 
 def _in(val, key):
     lo, hi = FR_PRIOR_BOUNDS[key]
-    return lo < val < hi
+    return lo <= val <= hi          # closed interval, so a pinned value may sit exactly on a bound (e.g. n = 2)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -219,20 +219,24 @@ MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter
 U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(0) outside ~(0.003, 30): runaway
 
 
-def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
+def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False):
     """
     Integrate the f(R) background from z_init to z=0 (see module docstring).
     Returns a Background, or None if the integration fails or leaves the
     physical domain (u <= 0, R <= 0, blow-up, non-finite output, too many function
     evaluations (stiff), or u(0) outside U0_RANGE (runaway solution)).
+    With return_reason=True returns (background_or_None, reason_string_or_None).
     """
+    def fail(msg):
+        return (None, msg) if return_reason else None
+
     N_i = -np.log1p(z_init)
     h = 1e-4
     u_i = float(E2_param(z_init))
     v_i = -(1.0 + z_init) * (float(E2_param(z_init + h)) - float(E2_param(z_init - h))) / (2.0 * h)
     R_i = 3.0 * v_i + 12.0 * u_i
     if not (np.isfinite(u_i) and np.isfinite(v_i) and u_i > 0.0 and R_i > 0.0):
-        return None
+        return fail("invalid initial conditions from the parameterisation (u_i or R_i <= 0)")
 
     R_FLOOR = 1e-12          # keeps rhs finite inside a step; events catch the violation
 
@@ -262,13 +266,22 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
         with np.errstate(all="ignore"):
             sol = solve_ivp(rhs, (N_i, 0.0), [u_i, v_i], method="LSODA", rtol=rtol, atol=1e-10,
                             dense_output=True, events=(leaves_domain, blows_up))
-    except Exception:
-        return None
+    except _TooStiff:
+        return fail(f"stiff: more than {MAX_RHS_EVALS} right-hand-side evaluations")
+    except Exception as exc:
+        return fail(f"integrator error: {exc}")
     if sol.status != 0 or not np.all(np.isfinite(sol.y)):
-        return None
+        z_stop = np.expm1(-sol.t[-1])
+        if len(sol.t_events[1]):
+            return fail(f"solution blew up at z = {z_stop:.3g} (|u'/u| > 1e3: exponential instability)")
+        if len(sol.t_events[0]):
+            return fail(f"solution left the physical domain (u <= 0 or R <= 0) at z = {z_stop:.3g}")
+        return fail(f"integrator failed at z = {z_stop:.3g}: {sol.message}")
     u0 = float(sol.y[0, -1])
     if not (np.isfinite(u0) and U0_RANGE[0] < u0 < U0_RANGE[1]):
-        return None
+        return fail(f"runaway solution: u(0) = {u0:.3g} outside {U0_RANGE} "
+                    f"(physical Omega_m = Omega_m/u(0) = {Omega_m / u0:.2g}); the f(R) correction is not "
+                    f"small at the starting redshift, so the GR-like initial conditions are invalid")
 
     def E2(z):
         z = np.asarray(z, dtype=float)
@@ -277,7 +290,8 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
                              f"raise FR_Z_INIT in main.py.")
         out = sol.sol(-np.log1p(z))[0] / u0
         return out if z.ndim else float(out)
-    return Background(E2, u0, Omega_m, sol)
+    bg = Background(E2, u0, Omega_m, sol)
+    return (bg, None) if return_reason else bg
 
 
 # ════════════════════════════════════════════════════════════════════════════

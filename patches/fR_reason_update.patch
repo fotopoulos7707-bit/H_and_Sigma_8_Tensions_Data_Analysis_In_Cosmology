@@ -1,0 +1,136 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+index 1827513..684549f 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+@@ -219,20 +219,24 @@ MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter
+ U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(0) outside ~(0.003, 30): runaway
+ 
+ 
+-def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
++def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False):
+     """
+     Integrate the f(R) background from z_init to z=0 (see module docstring).
+     Returns a Background, or None if the integration fails or leaves the
+     physical domain (u <= 0, R <= 0, blow-up, non-finite output, too many function
+     evaluations (stiff), or u(0) outside U0_RANGE (runaway solution)).
++    With return_reason=True returns (background_or_None, reason_string_or_None).
+     """
++    def fail(msg):
++        return (None, msg) if return_reason else None
++
+     N_i = -np.log1p(z_init)
+     h = 1e-4
+     u_i = float(E2_param(z_init))
+     v_i = -(1.0 + z_init) * (float(E2_param(z_init + h)) - float(E2_param(z_init - h))) / (2.0 * h)
+     R_i = 3.0 * v_i + 12.0 * u_i
+     if not (np.isfinite(u_i) and np.isfinite(v_i) and u_i > 0.0 and R_i > 0.0):
+-        return None
++        return fail("invalid initial conditions from the parameterisation (u_i or R_i <= 0)")
+ 
+     R_FLOOR = 1e-12          # keeps rhs finite inside a step; events catch the violation
+ 
+@@ -262,13 +266,22 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
+         with np.errstate(all="ignore"):
+             sol = solve_ivp(rhs, (N_i, 0.0), [u_i, v_i], method="LSODA", rtol=rtol, atol=1e-10,
+                             dense_output=True, events=(leaves_domain, blows_up))
+-    except Exception:
+-        return None
++    except _TooStiff:
++        return fail(f"stiff: more than {MAX_RHS_EVALS} right-hand-side evaluations")
++    except Exception as exc:
++        return fail(f"integrator error: {exc}")
+     if sol.status != 0 or not np.all(np.isfinite(sol.y)):
+-        return None
++        z_stop = np.expm1(-sol.t[-1])
++        if len(sol.t_events[1]):
++            return fail(f"solution blew up at z = {z_stop:.3g} (|u'/u| > 1e3: exponential instability)")
++        if len(sol.t_events[0]):
++            return fail(f"solution left the physical domain (u <= 0 or R <= 0) at z = {z_stop:.3g}")
++        return fail(f"integrator failed at z = {z_stop:.3g}: {sol.message}")
+     u0 = float(sol.y[0, -1])
+     if not (np.isfinite(u0) and U0_RANGE[0] < u0 < U0_RANGE[1]):
+-        return None
++        return fail(f"runaway solution: u(0) = {u0:.3g} outside {U0_RANGE} "
++                    f"(physical Omega_m = Omega_m/u(0) = {Omega_m / u0:.2g}); the f(R) correction is not "
++                    f"small at the starting redshift, so the GR-like initial conditions are invalid")
+ 
+     def E2(z):
+         z = np.asarray(z, dtype=float)
+@@ -277,7 +290,8 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8):
+                              f"raise FR_Z_INIT in main.py.")
+         out = sol.sol(-np.log1p(z))[0] / u0
+         return out if z.ndim else float(out)
+-    return Background(E2, u0, Omega_m, sol)
++    bg = Background(E2, u0, Omega_m, sol)
++    return (bg, None) if return_reason else bg
+ 
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+index cb253e9..9b18066 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+@@ -88,19 +88,20 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
+     expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
+ 
+     if derivs_of is None:                       # GR: parameterisation IS the background
+-        def build(theta_p, theta_fr=()):
++        def build(theta_p, theta_fr=(), return_reason=False):
+             theta = expand(theta_p)
+-            return fR.Background(lambda z: active_E2(z, theta), 1.0)
++            bg = fR.Background(lambda z: active_E2(z, theta), 1.0)
++            return (bg, None) if return_reason else bg
+         return build
+ 
+     if omega_m_func is None:
+         raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter "
+                          f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
+ 
+-    def build(theta_p, theta_fr):
++    def build(theta_p, theta_fr, return_reason=False):
+         theta = expand(theta_p)
+         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
+-                                   derivs_of(expand_fr(theta_fr)), fr_z_init)
++                                   derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
+     return build
+ 
+ 
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+index 44a519e..58042f6 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
+ import data_loader as dl
+ import fR
+ from run_config import get_run_config
+-from likelihood import make_log_posterior, make_background_builder, suggest_alpha_start, suggest_n_start
++from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
++                        suggest_alpha_start, suggest_n_start)
+ from plotting import plot_corner, generate_model_specific_plots
+ from results_io import save_histogram_data, write_posterior_summary
+ 
+@@ -134,9 +135,22 @@ if __name__ == "__main__":
+     _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
+     n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
+     if n_bad:
++        # Say WHY, using the first bad walker (prior/stability, or the f(R) solver's own reason).
++        w = next(w for w in p0 if not np.isfinite(log_posterior(w, *_args)))
++        th_p, th_fr = tuple(w[1:1 + n_param_theta]), tuple(w[1 + n_param_theta:])
++        expand_p, _ = make_theta_expander(PARAMETERISATION, FR_MODEL, FR_OMEGA_M_ANCHOR)
++        expand_fr, _ = fR.make_fr_expander(FR_MODEL, FR_FIXED_PARAMS)
++        prior_ok = np.isfinite(model_config["prior_func"](w[0], expand_p(th_p))) and \
++                   np.isfinite(fR.FR_REGISTRY[FR_MODEL]["prior_func"](expand_fr(th_fr)))
++        if not prior_ok:
++            reason = "the starting point is outside the prior / violates the f(R) stability condition"
++        else:
++            _, reason = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                                FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)(th_p, th_fr, return_reason=True)
++            reason = reason or "log-likelihood is not finite (non-positive or non-finite E^2(z))"
+         raise ValueError(f"{n_bad}/{N_WALKERS} initial walkers have zero probability for "
+-                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}: "
+-                         f"no valid background there (solver failure, runaway u(0), or prior/stability violation).")
++                         f"PARAMETERISATION={PARAMETERISATION}, FR_MODEL={FR_MODEL}, FR_FIXED_PARAMS={FR_FIXED_PARAMS}.\n"
++                         f"Reason (first bad walker): {reason}.")
+ 
+     n_proc = N_PROCESSES
+     if n_proc > 1 and "fork" not in multiprocessing.get_all_start_methods():
