@@ -15,7 +15,8 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model, 
     print("\nExporting 1D Posterior Histogram data files...")
     clean_names = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0",
                    r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta",
-                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR"}
+                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR",
+                   r"$\Lambda_{f(R)}$": "Lambda_fR"}
 
     for i, lbl in enumerate(labels):
         col_data = flat_chain[:, i]
@@ -38,6 +39,11 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model, 
                 f.write(f"{mid:15.6f}\t{cnt:.6e}\n")
 
         print(f"    -> Exported data track for {lbl} into: {txt_filename}")
+
+
+def _fmt(v):
+    """4 decimals as before; scientific notation only for tiny non-zero values (e.g. alpha ~ 1e-5)."""
+    return f"{v:.3e}" if (v != 0 and abs(v) < 1e-3) else f"{v:.4f}"
 
 
 def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, output_dir,
@@ -69,8 +75,8 @@ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, ou
             lo = med - np.percentile(col, 16)
             hi = np.percentile(col, 84) - med
 
-            print(f"    {lbl:14s}  {med:.4f}  +{hi:.4f} / -{lo:.4f}")
-            f.write(f"{lbl:15s} | {med:10.4f} | {hi:22.4f} | {lo:22.4f}\n")
+            print(f"    {lbl:14s}  {_fmt(med)}  +{_fmt(hi)} / -{_fmt(lo)}")
+            f.write(f"{lbl:15s} | {_fmt(med):>10s} | {_fmt(hi):>22s} | {_fmt(lo):>22s}\n")
 
         if chosen_model in ["Custom_Universal", "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha"]:
             f.write(f"----------------------------------------------------------\n")

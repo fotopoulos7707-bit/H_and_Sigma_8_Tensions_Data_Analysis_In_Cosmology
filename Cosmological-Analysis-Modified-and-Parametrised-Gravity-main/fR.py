@@ -9,6 +9,9 @@ out symbolically in Modified_Gravity_Models/fR_friedmann.py:
                                          is the background, as in the old pipeline)
     "power_law"  f = R + alpha R^n      free: alpha, n
     "R_log_R"    f = R (1 + alpha ln R) free: alpha
+    "R_lambda_R2" f = R - 2 Lambda + alpha R^2   free: Lambda, alpha  (not in fR_friedmann.py)
+                 Solved NOT by the ODE but on the smooth (scalaron-free) attractor, in closed form
+                 to second order in alpha -- see "R_lambda_R2" below.
 
 HOW THE f(R) MODEL ENTERS THE LIKELIHOOD
 ----------------------------------------
@@ -60,6 +63,22 @@ LIMITATIONS
   to be almost unconstrained in f(R) runs.  LCDM (Omega_m only) is the natural
   companion.
 * Stability: f_RR > 0 is imposed in the prior (see each model's prior function).
+* "R_lambda_R2" (f = R - 2 Lambda + alpha R^2).  The ODE is unusable for R^2 gravity: the heavy
+  scalaron (mass^2 ~ 1/6alpha) makes it stiff for small alpha (cost ~ alpha^-1/2), and the
+  LCDM initial conditions excite scalaron oscillations whose relative amplitude grows as the
+  universe expands (R even turns negative).  Instead the tt equation is solved order by order in
+  alpha on the smooth attractor.  With x = Omega_m (1+z)^3 (anchor H0 = 1 units):
+        u = x + Lambda/3 + (27/2) alpha x^2 - alpha^2 (486 Lambda x^2 + 729 x^3) + O(alpha^3)
+  (zeroth order = LCDM with Omega_Lambda = Lambda/3; verified symbolically: the tt residual of
+  the first-order form starts at O(alpha^2), and the second-order term follows from it).
+  Truncation error is estimated as max|E2_1st/E2_2nd - 1| over 0<=z<=FR_Z_INIT and parameters are
+  rejected above PERTURBATIVE_TOL.  Here FR_Z_INIT is the highest redshift where the expansion is
+  trusted (default 2.5, just above the data).  This is the scalaron-free attractor: any scalaron
+  oscillation is assumed to have decayed.  Practically the estimate scales as alpha^2 and reaches the
+  1e-3 tolerance at alpha ~ 9e-5, where the effect of alpha on E^2 at the highest data redshift
+  (BAO, z = 2.36) is only ~0.6%, below the data errors: alpha is UNCONSTRAINED by background data
+  (its posterior is the prior cut at ~9e-5), and the model is degenerate with LCDM (Lambda plays
+  the role of Omega_m).
 * Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
   a valid starting point if the f(R) model has a GR-like matter era at early times.
     - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
@@ -80,6 +99,8 @@ FR_PRIOR_BOUNDS = {
     "alpha_power": (-10.0, 10.0),
     "n_power"    : (  0.1,  2.0),
     "alpha_log"  : (  0.0,  3.0),
+    "Lambda"     : (  0.0, 20.0),     # R_lambda_R2: cosmological constant in anchor-H0^2 units (LCDM-like value ~ 3(1-Omega_m) = 2.1)
+    "alpha_R2"   : (  0.0,  1e-4),    # R_lambda_R2: R^2 coefficient (anchor-H0^-2 units); PERTURBATIVE_TOL cuts in at ~9e-5
 }
 
 def _in(val, key):
@@ -118,6 +139,59 @@ def _prior_R_log_R(theta):
     return 0.0 if _in(alpha, "alpha_log") else -np.inf
 
 
+def _derivs_R_lambda_R2(theta):
+    Lam, alpha = theta
+    return (lambda R: R - 2.0 * Lam + alpha * R**2,
+            lambda R: 1.0 + 2.0 * alpha * R,
+            lambda R: 2.0 * alpha,
+            lambda R: 0.0)
+
+def _prior_R_lambda_R2(theta):
+    Lam, alpha = theta
+    # f_RR = 2 alpha > 0 (stability)
+    return 0.0 if (_in(Lam, "Lambda") and _in(alpha, "alpha_R2") and alpha > 0.0) else -np.inf
+
+
+PERTURBATIVE_TOL = 1e-3    # max tolerated estimated truncation error of E^2 for perturbative backgrounds
+
+
+def _background_R_lambda_R2(Omega_m, theta, z_max):
+    """
+    Second-order attractor solution of f = R - 2 Lambda + alpha R^2 (module docstring).
+    Returns (Background or None, reason or None).  z_max = highest redshift E2 may be asked for.
+    """
+    Lam, alpha = theta
+
+    def u(z, order):
+        x = Omega_m * (1.0 + np.asarray(z, dtype=float)) ** 3
+        out = x + Lam / 3.0
+        if order >= 1:
+            out = out + 13.5 * alpha * x**2
+        if order >= 2:
+            out = out - alpha**2 * (486.0 * Lam * x**2 + 729.0 * x**3)
+        return out
+
+    zg = np.linspace(0.0, z_max, 100)
+    u2, u1 = u(zg, 2), u(zg, 1)
+    if not (np.all(np.isfinite(u2)) and np.all(u2 > 0.0) and np.all(u1 > 0.0)):
+        return None, "expansion in alpha gives u <= 0 (alpha too large for the perturbative solution)"
+    err = float(np.max(np.abs((u1 / u1[0]) / (u2 / u2[0]) - 1.0)))
+    if err > PERTURBATIVE_TOL:
+        return None, (f"perturbative expansion in alpha not converged: estimated truncation error "
+                      f"{err:.1e} > {PERTURBATIVE_TOL:.0e} up to z = {z_max:g} (reduce alpha or FR_Z_INIT)")
+    u0 = float(u2[0])
+    if not (U0_RANGE[0] < u0 < U0_RANGE[1]):
+        return None, (f"u(0) = {u0:.3g} outside {U0_RANGE} (physical Omega_m = Omega_m/u(0) = {Omega_m / u0:.2g})")
+
+    def E2(z):
+        z = np.asarray(z, dtype=float)
+        if np.any(z > z_max):
+            raise ValueError(f"E2(z) requested at z={z.max():.3g} > FR_Z_INIT={z_max}; raise FR_Z_INIT in main.py.")
+        out = u(z, 2) / u0
+        return out if z.ndim else float(out)
+    return Background(E2, u0, Omega_m, None, err), None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # f(R) REGISTRY
 # ════════════════════════════════════════════════════════════════════════════
@@ -127,6 +201,8 @@ def _prior_R_log_R(theta):
 #   p0_center / p0_scatter : walker initialisation for those parameters
 #   prior_func : theta_fR -> 0.0 or -inf
 #   derivs     : theta_fR -> (f, f_R, f_RR, f_RRR);  None for GR
+#   analytic_background (optional): (Omega_m, theta_fR, z_max) -> (Background|None, reason); replaces the ODE
+#   z_init_default (optional): default FR_Z_INIT for this model (40 if absent)
 FR_REGISTRY = {
     "GR": {
         "description": "f(R) = R: General Relativity; dark energy comes from the parameterisation",
@@ -145,6 +221,17 @@ FR_REGISTRY = {
         "p0_scatter" : np.array([ 0.15, 0.01]),
         "prior_func" : _prior_power_law,
         "derivs"     : _derivs_power_law,
+    },
+    "R_lambda_R2": {
+        "description": "f(R) = R - 2 Lambda + alpha R^2  (Starobinsky R^2 with a cosmological constant)",
+        "param_names": ["Lambda", "alpha"],
+        "labels"     : [r"$\Lambda_{f(R)}$", r"$\alpha_{f(R)}$"],
+        "p0_center"  : np.array([2.1, 5e-5]),     # Lambda ~ 3(1-Omega_m) = 2.1 -> LCDM-like; alpha small
+        "p0_scatter" : np.array([0.05, 1e-5]),
+        "prior_func" : _prior_R_lambda_R2,
+        "derivs"     : _derivs_R_lambda_R2,
+        "analytic_background": _background_R_lambda_R2,   # used INSTEAD of the ODE
+        "z_init_default": 2.5,                            # = highest redshift of validity
     },
     "R_log_R": {
         "description": "f(R) = R (1 + alpha ln R)",
@@ -207,12 +294,14 @@ def R_N_from_matter(derivs, R, u, kappa_rho_m):
 class Background:
     """E2(z): vectorised E^2(z) = H^2/H0^2 with E^2(0)=1.  u0: u(N=0) in anchor units.
     omega_m: anchor Omega_m used for the integration (None for GR backgrounds).
-    sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR); for diagnostics."""
-    def __init__(self, E2, u0=1.0, omega_m=None, sol=None):
+    sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR / perturbative models).
+    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models)."""
+    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None):
         self.E2 = E2
         self.u0 = u0
         self.omega_m = omega_m
         self.sol = sol
+        self.truncation_error = truncation_error
 
 
 MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter space blow past this

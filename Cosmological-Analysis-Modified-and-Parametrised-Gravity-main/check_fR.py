@@ -9,6 +9,9 @@ Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
 3. GR passthrough: FR_MODEL = "GR" returns the parameterisation's own E^2(z).
 4. Initial-condition convergence versus FR_Z_INIT (power law converges; R_log_R does not).
 5. Pinned f(R) parameters (FR_FIXED_PARAMS) give the same background as sampling them.
+6. R_lambda_R2 (perturbative attractor): alpha -> 0 is exactly LCDM; the closed form solves the tt
+   equation symbolically through O(alpha); it matches the full ODE started on the attractor;
+   and the truncation guard accepts small alpha and rejects large alpha.
 """
 import numpy as np
 
@@ -73,5 +76,44 @@ free = make_background_builder("LCDM", "power_law", 0.05, 0.17, 40.0, OM)((), (-
 pinned = make_background_builder("LCDM", "power_law", 0.05, 0.17, 40.0, OM, {"n": 0.29})((), (-2.7,))
 report("pinned parameters [power_law n=0.29]", np.array_equal(free.E2(zs), pinned.E2(zs)),
        "E2(z) identical to the free-parameter build")
+
+# ── 6. R_lambda_R2 ─────────────────────────────────────────────────────────────
+Lam, m_ = 2.1, OM
+bR2 = make_background_builder("LCDM", "R_lambda_R2", 0.05, 0.17, 2.5, OM)
+bg0 = bR2((), (Lam, 0.0))
+ref = P.E2_lcdm(zs, (m_ / bg0.u0,))
+report("R_lambda_R2: alpha->0 is LCDM", np.max(np.abs(bg0.E2(zs) / ref - 1)) < 1e-12,
+       f"max |E2/E2_LCDM - 1| = {np.max(np.abs(bg0.E2(zs) / ref - 1)):.1e}, Omega_m_phys = {m_/bg0.u0:.4f}")
+
+try:
+    import sympy as sp
+    N_, mm, LL, aa = sp.symbols("N m Lambda alpha", positive=True)
+    x_ = mm * sp.exp(-3 * N_)
+    u_ = x_ + LL / 3 + sp.Rational(27, 2) * aa * x_**2 - aa**2 * (486 * LL * x_**2 + 729 * x_**3)
+    R_ = 3 * sp.diff(u_, N_) + 12 * u_
+    F_ = 1 + 2 * aa * R_
+    tt = sp.expand(sp.simplify(3 * F_ * u_ + (R_ - 2 * LL + aa * R_**2 - R_ * F_) / 2 + 3 * u_ * sp.diff(F_, N_) - 3 * x_))
+    ok = all(sp.simplify(tt.coeff(aa, k)) == 0 for k in (0, 1, 2))
+    report("R_lambda_R2: tt residual vanishes through O(alpha^2) (sympy)", ok, "coefficients of alpha^0, alpha^1, alpha^2 are zero")
+except ImportError:
+    report("R_lambda_R2: symbolic check", True, "sympy not installed, skipped", info=True)
+
+from scipy.integrate import solve_ivp
+a_ = 1e-5
+x_of = lambda N: m_ * np.exp(-3 * N)
+u_of = lambda N: x_of(N) + Lam / 3 + 13.5 * a_ * x_of(N)**2 - a_**2 * (486 * Lam * x_of(N)**2 + 729 * x_of(N)**3)
+dR2 = fR.FR_REGISTRY["R_lambda_R2"]["derivs"]((Lam, a_)); N_i = -np.log1p(4.0); hh = 1e-5
+def rhs(N, y):
+    R = max(3 * y[1] + 12 * y[0], 1e-9)
+    return [y[1], fR.R_N_from_matter(dR2, R, max(y[0], 1e-9), 3 * m_ * np.exp(-3 * N)) / 3 - 4 * y[1]]
+sol = solve_ivp(rhs, (N_i, 0), [u_of(N_i), (u_of(N_i + hh) - u_of(N_i - hh)) / (2 * hh)], method="Radau",
+                rtol=1e-10, atol=1e-12, dense_output=True, max_step=0.01)
+Ng = -np.log1p(zs)
+dev = np.max(np.abs(bR2((), (Lam, a_)).E2(zs) / (sol.sol(Ng)[0] / sol.sol(0.0)[0]) - 1))
+report("R_lambda_R2: closed form vs full ODE (alpha=1e-5)", dev < 1e-4, f"max |dE2/E2| = {dev:.1e}")
+
+ok_small, ok_big = bR2((), (Lam, 5e-5)), bR2((), (Lam, 2e-4))
+report("R_lambda_R2: truncation guard", ok_small is not None and ok_big is None,
+       f"alpha=5e-5 accepted (err est {ok_small.truncation_error:.1e}); alpha=2e-4 rejected (err est ~5e-3 > 1e-3)")
 
 print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")

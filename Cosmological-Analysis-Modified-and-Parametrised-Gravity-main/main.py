@@ -21,18 +21,20 @@ from results_io import save_histogram_data, write_posterior_summary
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
 # ════════════════════════════════════════════════════════════════════════════
-PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+PARAMETERISATION = "wCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "power_law"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "R_lambda_R2"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
                          # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
-FR_FIXED_PARAMS  = {"n": 0.5, "alpha": -0.01}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
+FR_FIXED_PARAMS  = {"alpha": 1e-9}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
                          # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
                          # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
-FR_Z_INIT        = 40.0  # redshift where the parameterisation sets the f(R) initial conditions (must exceed max data z ~2.4;
-                         # larger = more converged but slower; main.py prints a convergence test for f(R) runs)
+FR_Z_INIT        = None  # None -> model default (40 for the ODE models; 2.5 for R_lambda_R2).  ODE models: redshift where the
+                         # parameterisation sets the initial conditions (> max data z ~2.4; larger = more converged but slower;
+                         # a convergence test is printed for f(R) runs).  R_lambda_R2: highest redshift where the perturbative
+                         # solution is trusted (must exceed ~2.4).
 FR_OMEGA_M_ANCHOR = 0.3  # f(R) runs only: Omega_m is NOT sampled (degenerate with alpha, see fR.py); this is the gauge value.
                          # The physical present-day Omega_m is reported as a derived quantity.
 
@@ -60,7 +62,7 @@ if not _active:
 RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
 # ────────────────────────────────────────────────────────────────────────────
 
-N_WALKERS, N_BURNIN, N_STEPS = 64, 100, 500
+N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
 N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
                                             # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
 RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
@@ -68,6 +70,8 @@ RANDOM_SEED = None                          # int -> reproducible chain (same re
 # ════════════════════════════════════════════════════════════════════════════
 # VALIDATE SELECTION & INITIALIZE ARCHITECTURE
 # ════════════════════════════════════════════════════════════════════════════
+if FR_Z_INIT is None:
+    FR_Z_INIT = fR.FR_REGISTRY[FR_MODEL].get("z_init_default", 40.0)
 model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
 RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
 n_param_theta = model_config["n_param_theta"]
@@ -105,7 +109,7 @@ if __name__ == "__main__":
 
     # With pinned f(R) parameters (e.g. n) the stored alpha start (tuned for the default n) may be
     # invalid, so choose alpha so that the background is LCDM-like (u(0) ~ 1).  Start point only.
-    if FR_FIXED_PARAMS and FR_MODEL != "GR":
+    if FR_FIXED_PARAMS and FR_MODEL in ("power_law", "R_log_R"):
         free_names = [nm for nm in fR.FR_REGISTRY[FR_MODEL]["param_names"] if nm not in FR_FIXED_PARAMS]
         if "alpha" in free_names:
             col = 1 + n_param_theta + free_names.index("alpha")
@@ -211,12 +215,27 @@ if __name__ == "__main__":
                         "Derived (H0 above is the true present-day value):"]
         extra_lines += ["  " + ln for ln in derived_lines]
 
-        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
         med = np.median(flat_chain, axis=0)
+        if fR.FR_REGISTRY[FR_MODEL].get("analytic_background") is not None:
+            # Perturbative model: no initial conditions; report the truncation-error estimate instead
+            bg_med = build_bg(tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
+            if bg_med is None:
+                extra_lines += ["Perturbative truncation test: background invalid at the posterior median"]
+            else:
+                extra_lines += [f"Perturbative truncation error estimate at the posterior median (z <= {FR_Z_INIT:g}): "
+                                f"{bg_med.truncation_error:.1e}  (rejected above {fR.PERTURBATIVE_TOL:.0e})",
+                                "  Scalaron-free attractor, 2nd order in alpha; the model is almost degenerate with LCDM for background data."]
+            sens = "skip"
+        else:
+            sens = None
+        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
         build_2x = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA,
                                            2.0 * FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
-        sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
-        if sens is None:
+        if sens != "skip":
+            sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
+        if sens == "skip":
+            pass
+        elif sens is None:
             extra_lines += ["IC convergence test: background could not be solved at the posterior median"]
         else:
             extra_lines += [f"IC convergence test: max|E2(z_init={FR_Z_INIT:g})/E2(z_init={2*FR_Z_INIT:g}) - 1| = {sens:.2e} on z in [0, 2.4]"]

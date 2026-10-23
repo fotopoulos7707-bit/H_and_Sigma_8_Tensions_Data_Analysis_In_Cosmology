@@ -59,11 +59,12 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
             raise ValueError(f"Fixed n={val} is outside the prior range {fR.FR_PRIOR_BOUNDS['n_power']} or equals 1 (f = (1+alpha)R, i.e. GR).")
 
     names = fcfg["param_names"]
-    if fr_fixed and all(nm in fr_fixed for nm in (names if fr_model == "power_law" else ["alpha"] if fr_model == "R_log_R" else [])):
+    if names and all(nm in fr_fixed for nm in names):
         full = tuple(fr_fixed[nm] for nm in names)
         if not np.isfinite(fcfg["prior_func"](full)):
             rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
-                    "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)"}[fr_model]
+                    "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)",
+                    "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds"}[fr_model]
             raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
                              f"Bounds: {fR.FR_PRIOR_BOUNDS}")
 

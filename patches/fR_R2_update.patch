@@ -1,0 +1,370 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+index f3ede17..c49498c 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+@@ -9,6 +9,9 @@ Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
+ 3. GR passthrough: FR_MODEL = "GR" returns the parameterisation's own E^2(z).
+ 4. Initial-condition convergence versus FR_Z_INIT (power law converges; R_log_R does not).
+ 5. Pinned f(R) parameters (FR_FIXED_PARAMS) give the same background as sampling them.
++6. R_lambda_R2 (perturbative attractor): alpha -> 0 is exactly LCDM; the closed form solves the tt
++   equation symbolically through O(alpha); it matches the full ODE started on the attractor;
++   and the truncation guard accepts small alpha and rejects large alpha.
+ """
+ import numpy as np
+ 
+@@ -74,4 +77,43 @@ pinned = make_background_builder("LCDM", "power_law", 0.05, 0.17, 40.0, OM, {"n"
+ report("pinned parameters [power_law n=0.29]", np.array_equal(free.E2(zs), pinned.E2(zs)),
+        "E2(z) identical to the free-parameter build")
+ 
++# ── 6. R_lambda_R2 ─────────────────────────────────────────────────────────────
++Lam, m_ = 2.1, OM
++bR2 = make_background_builder("LCDM", "R_lambda_R2", 0.05, 0.17, 2.5, OM)
++bg0 = bR2((), (Lam, 0.0))
++ref = P.E2_lcdm(zs, (m_ / bg0.u0,))
++report("R_lambda_R2: alpha->0 is LCDM", np.max(np.abs(bg0.E2(zs) / ref - 1)) < 1e-12,
++       f"max |E2/E2_LCDM - 1| = {np.max(np.abs(bg0.E2(zs) / ref - 1)):.1e}, Omega_m_phys = {m_/bg0.u0:.4f}")
++
++try:
++    import sympy as sp
++    N_, mm, LL, aa = sp.symbols("N m Lambda alpha", positive=True)
++    x_ = mm * sp.exp(-3 * N_)
++    u_ = x_ + LL / 3 + sp.Rational(27, 2) * aa * x_**2 - aa**2 * (486 * LL * x_**2 + 729 * x_**3)
++    R_ = 3 * sp.diff(u_, N_) + 12 * u_
++    F_ = 1 + 2 * aa * R_
++    tt = sp.expand(sp.simplify(3 * F_ * u_ + (R_ - 2 * LL + aa * R_**2 - R_ * F_) / 2 + 3 * u_ * sp.diff(F_, N_) - 3 * x_))
++    ok = all(sp.simplify(tt.coeff(aa, k)) == 0 for k in (0, 1, 2))
++    report("R_lambda_R2: tt residual vanishes through O(alpha^2) (sympy)", ok, "coefficients of alpha^0, alpha^1, alpha^2 are zero")
++except ImportError:
++    report("R_lambda_R2: symbolic check", True, "sympy not installed, skipped", info=True)
++
++from scipy.integrate import solve_ivp
++a_ = 1e-5
++x_of = lambda N: m_ * np.exp(-3 * N)
++u_of = lambda N: x_of(N) + Lam / 3 + 13.5 * a_ * x_of(N)**2 - a_**2 * (486 * Lam * x_of(N)**2 + 729 * x_of(N)**3)
++dR2 = fR.FR_REGISTRY["R_lambda_R2"]["derivs"]((Lam, a_)); N_i = -np.log1p(4.0); hh = 1e-5
++def rhs(N, y):
++    R = max(3 * y[1] + 12 * y[0], 1e-9)
++    return [y[1], fR.R_N_from_matter(dR2, R, max(y[0], 1e-9), 3 * m_ * np.exp(-3 * N)) / 3 - 4 * y[1]]
++sol = solve_ivp(rhs, (N_i, 0), [u_of(N_i), (u_of(N_i + hh) - u_of(N_i - hh)) / (2 * hh)], method="Radau",
++                rtol=1e-10, atol=1e-12, dense_output=True, max_step=0.01)
++Ng = -np.log1p(zs)
++dev = np.max(np.abs(bR2((), (Lam, a_)).E2(zs) / (sol.sol(Ng)[0] / sol.sol(0.0)[0]) - 1))
++report("R_lambda_R2: closed form vs full ODE (alpha=1e-5)", dev < 1e-4, f"max |dE2/E2| = {dev:.1e}")
++
++ok_small, ok_big = bR2((), (Lam, 5e-5)), bR2((), (Lam, 2e-4))
++report("R_lambda_R2: truncation guard", ok_small is not None and ok_big is None,
++       f"alpha=5e-5 accepted (err est {ok_small.truncation_error:.1e}); alpha=2e-4 rejected (err est ~5e-3 > 1e-3)")
++
+ print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+index f04d2b8..68fb142 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+@@ -9,6 +9,9 @@ out symbolically in Modified_Gravity_Models/fR_friedmann.py:
+                                          is the background, as in the old pipeline)
+     "power_law"  f = R + alpha R^n      free: alpha, n
+     "R_log_R"    f = R (1 + alpha ln R) free: alpha
++    "R_lambda_R2" f = R - 2 Lambda + alpha R^2   free: Lambda, alpha  (not in fR_friedmann.py)
++                 Solved NOT by the ODE but on the smooth (scalaron-free) attractor, in closed form
++                 to second order in alpha -- see "R_lambda_R2" below.
+ 
+ HOW THE f(R) MODEL ENTERS THE LIKELIHOOD
+ ----------------------------------------
+@@ -60,6 +63,22 @@ LIMITATIONS
+   to be almost unconstrained in f(R) runs.  LCDM (Omega_m only) is the natural
+   companion.
+ * Stability: f_RR > 0 is imposed in the prior (see each model's prior function).
++* "R_lambda_R2" (f = R - 2 Lambda + alpha R^2).  The ODE is unusable for R^2 gravity: the heavy
++  scalaron (mass^2 ~ 1/6alpha) makes it stiff for small alpha (cost ~ alpha^-1/2), and the
++  LCDM initial conditions excite scalaron oscillations whose relative amplitude grows as the
++  universe expands (R even turns negative).  Instead the tt equation is solved order by order in
++  alpha on the smooth attractor.  With x = Omega_m (1+z)^3 (anchor H0 = 1 units):
++        u = x + Lambda/3 + (27/2) alpha x^2 - alpha^2 (486 Lambda x^2 + 729 x^3) + O(alpha^3)
++  (zeroth order = LCDM with Omega_Lambda = Lambda/3; verified symbolically: the tt residual of
++  the first-order form starts at O(alpha^2), and the second-order term follows from it).
++  Truncation error is estimated as max|E2_1st/E2_2nd - 1| over 0<=z<=FR_Z_INIT and parameters are
++  rejected above PERTURBATIVE_TOL.  Here FR_Z_INIT is the highest redshift where the expansion is
++  trusted (default 2.5, just above the data).  This is the scalaron-free attractor: any scalaron
++  oscillation is assumed to have decayed.  Practically the estimate scales as alpha^2 and reaches the
++  1e-3 tolerance at alpha ~ 9e-5, where the effect of alpha on E^2 at the highest data redshift
++  (BAO, z = 2.36) is only ~0.6%, below the data errors: alpha is UNCONSTRAINED by background data
++  (its posterior is the prior cut at ~9e-5), and the model is degenerate with LCDM (Lambda plays
++  the role of Omega_m).
+ * Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
+   a valid starting point if the f(R) model has a GR-like matter era at early times.
+     - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
+@@ -80,6 +99,8 @@ FR_PRIOR_BOUNDS = {
+     "alpha_power": (-10.0, 10.0),
+     "n_power"    : (  0.1,  2.0),
+     "alpha_log"  : (  0.0,  3.0),
++    "Lambda"     : (  0.0, 20.0),     # R_lambda_R2: cosmological constant in anchor-H0^2 units (LCDM-like value ~ 3(1-Omega_m) = 2.1)
++    "alpha_R2"   : (  0.0,  1e-4),    # R_lambda_R2: R^2 coefficient (anchor-H0^-2 units); PERTURBATIVE_TOL cuts in at ~9e-5
+ }
+ 
+ def _in(val, key):
+@@ -118,6 +139,59 @@ def _prior_R_log_R(theta):
+     return 0.0 if _in(alpha, "alpha_log") else -np.inf
+ 
+ 
++def _derivs_R_lambda_R2(theta):
++    Lam, alpha = theta
++    return (lambda R: R - 2.0 * Lam + alpha * R**2,
++            lambda R: 1.0 + 2.0 * alpha * R,
++            lambda R: 2.0 * alpha,
++            lambda R: 0.0)
++
++def _prior_R_lambda_R2(theta):
++    Lam, alpha = theta
++    # f_RR = 2 alpha > 0 (stability)
++    return 0.0 if (_in(Lam, "Lambda") and _in(alpha, "alpha_R2") and alpha > 0.0) else -np.inf
++
++
++PERTURBATIVE_TOL = 1e-3    # max tolerated estimated truncation error of E^2 for perturbative backgrounds
++
++
++def _background_R_lambda_R2(Omega_m, theta, z_max):
++    """
++    Second-order attractor solution of f = R - 2 Lambda + alpha R^2 (module docstring).
++    Returns (Background or None, reason or None).  z_max = highest redshift E2 may be asked for.
++    """
++    Lam, alpha = theta
++
++    def u(z, order):
++        x = Omega_m * (1.0 + np.asarray(z, dtype=float)) ** 3
++        out = x + Lam / 3.0
++        if order >= 1:
++            out = out + 13.5 * alpha * x**2
++        if order >= 2:
++            out = out - alpha**2 * (486.0 * Lam * x**2 + 729.0 * x**3)
++        return out
++
++    zg = np.linspace(0.0, z_max, 100)
++    u2, u1 = u(zg, 2), u(zg, 1)
++    if not (np.all(np.isfinite(u2)) and np.all(u2 > 0.0) and np.all(u1 > 0.0)):
++        return None, "expansion in alpha gives u <= 0 (alpha too large for the perturbative solution)"
++    err = float(np.max(np.abs((u1 / u1[0]) / (u2 / u2[0]) - 1.0)))
++    if err > PERTURBATIVE_TOL:
++        return None, (f"perturbative expansion in alpha not converged: estimated truncation error "
++                      f"{err:.1e} > {PERTURBATIVE_TOL:.0e} up to z = {z_max:g} (reduce alpha or FR_Z_INIT)")
++    u0 = float(u2[0])
++    if not (U0_RANGE[0] < u0 < U0_RANGE[1]):
++        return None, (f"u(0) = {u0:.3g} outside {U0_RANGE} (physical Omega_m = Omega_m/u(0) = {Omega_m / u0:.2g})")
++
++    def E2(z):
++        z = np.asarray(z, dtype=float)
++        if np.any(z > z_max):
++            raise ValueError(f"E2(z) requested at z={z.max():.3g} > FR_Z_INIT={z_max}; raise FR_Z_INIT in main.py.")
++        out = u(z, 2) / u0
++        return out if z.ndim else float(out)
++    return Background(E2, u0, Omega_m, None, err), None
++
++
+ # ════════════════════════════════════════════════════════════════════════════
+ # f(R) REGISTRY
+ # ════════════════════════════════════════════════════════════════════════════
+@@ -127,6 +201,8 @@ def _prior_R_log_R(theta):
+ #   p0_center / p0_scatter : walker initialisation for those parameters
+ #   prior_func : theta_fR -> 0.0 or -inf
+ #   derivs     : theta_fR -> (f, f_R, f_RR, f_RRR);  None for GR
++#   analytic_background (optional): (Omega_m, theta_fR, z_max) -> (Background|None, reason); replaces the ODE
++#   z_init_default (optional): default FR_Z_INIT for this model (40 if absent)
+ FR_REGISTRY = {
+     "GR": {
+         "description": "f(R) = R: General Relativity; dark energy comes from the parameterisation",
+@@ -146,6 +222,17 @@ FR_REGISTRY = {
+         "prior_func" : _prior_power_law,
+         "derivs"     : _derivs_power_law,
+     },
++    "R_lambda_R2": {
++        "description": "f(R) = R - 2 Lambda + alpha R^2  (Starobinsky R^2 with a cosmological constant)",
++        "param_names": ["Lambda", "alpha"],
++        "labels"     : [r"$\Lambda_{f(R)}$", r"$\alpha_{f(R)}$"],
++        "p0_center"  : np.array([2.1, 5e-5]),     # Lambda ~ 3(1-Omega_m) = 2.1 -> LCDM-like; alpha small
++        "p0_scatter" : np.array([0.05, 1e-5]),
++        "prior_func" : _prior_R_lambda_R2,
++        "derivs"     : _derivs_R_lambda_R2,
++        "analytic_background": _background_R_lambda_R2,   # used INSTEAD of the ODE
++        "z_init_default": 2.5,                            # = highest redshift of validity
++    },
+     "R_log_R": {
+         "description": "f(R) = R (1 + alpha ln R)",
+         "param_names": ["alpha"],
+@@ -207,12 +294,14 @@ def R_N_from_matter(derivs, R, u, kappa_rho_m):
+ class Background:
+     """E2(z): vectorised E^2(z) = H^2/H0^2 with E^2(0)=1.  u0: u(N=0) in anchor units.
+     omega_m: anchor Omega_m used for the integration (None for GR backgrounds).
+-    sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR); for diagnostics."""
+-    def __init__(self, E2, u0=1.0, omega_m=None, sol=None):
++    sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR / perturbative models).
++    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models)."""
++    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None):
+         self.E2 = E2
+         self.u0 = u0
+         self.omega_m = omega_m
+         self.sol = sol
++        self.truncation_error = truncation_error
+ 
+ 
+ MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter space blow past this
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+index 9b18066..8d3c8ff 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+@@ -98,8 +98,13 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
+         raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter "
+                          f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
+ 
++    analytic = fcfg.get("analytic_background")
++
+     def build(theta_p, theta_fr, return_reason=False):
+         theta = expand(theta_p)
++        if analytic is not None:                 # perturbative attractor instead of the ODE
++            out = analytic(omega_m_func(theta), expand_fr(theta_fr), fr_z_init)
++            return out if return_reason else out[0]
+         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
+                                    derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
+     return build
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+index 8176574..2c31676 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+@@ -21,18 +21,20 @@ from results_io import save_histogram_data, write_posterior_summary
+ # ════════════════════════════════════════════════════════════════════════════
+ # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
+ # ════════════════════════════════════════════════════════════════════════════
+-PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
++PARAMETERISATION = "wCDM_fixed_Omega_m"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
+-FR_MODEL         = "power_law"  # f(R) gravity model (fR.py).  Options:
++FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
+                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
+                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
+                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
+                          # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
+-FR_FIXED_PARAMS  = {"n": 0.5, "alpha": -0.01}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
++FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
+                          # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
+                          # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
+-FR_Z_INIT        = 40.0  # redshift where the parameterisation sets the f(R) initial conditions (must exceed max data z ~2.4;
+-                         # larger = more converged but slower; main.py prints a convergence test for f(R) runs)
++FR_Z_INIT        = None  # None -> model default (40 for the ODE models; 2.5 for R_lambda_R2).  ODE models: redshift where the
++                         # parameterisation sets the initial conditions (> max data z ~2.4; larger = more converged but slower;
++                         # a convergence test is printed for f(R) runs).  R_lambda_R2: highest redshift where the perturbative
++                         # solution is trusted (must exceed ~2.4).
+ FR_OMEGA_M_ANCHOR = 0.3  # f(R) runs only: Omega_m is NOT sampled (degenerate with alpha, see fR.py); this is the gauge value.
+                          # The physical present-day Omega_m is reported as a derived quantity.
+ 
+@@ -60,7 +62,7 @@ if not _active:
+ RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
+ # ────────────────────────────────────────────────────────────────────────────
+ 
+-N_WALKERS, N_BURNIN, N_STEPS = 64, 100, 500
++N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
+ N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
+                                             # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
+ RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
+@@ -68,6 +70,8 @@ RANDOM_SEED = None                          # int -> reproducible chain (same re
+ # ════════════════════════════════════════════════════════════════════════════
+ # VALIDATE SELECTION & INITIALIZE ARCHITECTURE
+ # ════════════════════════════════════════════════════════════════════════════
++if FR_Z_INIT is None:
++    FR_Z_INIT = fR.FR_REGISTRY[FR_MODEL].get("z_init_default", 40.0)
+ model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
+ RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
+ n_param_theta = model_config["n_param_theta"]
+@@ -105,7 +109,7 @@ if __name__ == "__main__":
+ 
+     # With pinned f(R) parameters (e.g. n) the stored alpha start (tuned for the default n) may be
+     # invalid, so choose alpha so that the background is LCDM-like (u(0) ~ 1).  Start point only.
+-    if FR_FIXED_PARAMS and FR_MODEL != "GR":
++    if FR_FIXED_PARAMS and FR_MODEL in ("power_law", "R_log_R"):
+         free_names = [nm for nm in fR.FR_REGISTRY[FR_MODEL]["param_names"] if nm not in FR_FIXED_PARAMS]
+         if "alpha" in free_names:
+             col = 1 + n_param_theta + free_names.index("alpha")
+@@ -211,12 +215,27 @@ if __name__ == "__main__":
+                         "Derived (H0 above is the true present-day value):"]
+         extra_lines += ["  " + ln for ln in derived_lines]
+ 
+-        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
+         med = np.median(flat_chain, axis=0)
++        if fR.FR_REGISTRY[FR_MODEL].get("analytic_background") is not None:
++            # Perturbative model: no initial conditions; report the truncation-error estimate instead
++            bg_med = build_bg(tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
++            if bg_med is None:
++                extra_lines += ["Perturbative truncation test: background invalid at the posterior median"]
++            else:
++                extra_lines += [f"Perturbative truncation error estimate at the posterior median (z <= {FR_Z_INIT:g}): "
++                                f"{bg_med.truncation_error:.1e}  (rejected above {fR.PERTURBATIVE_TOL:.0e})",
++                                "  Scalaron-free attractor, 2nd order in alpha; the model is almost degenerate with LCDM for background data."]
++            sens = "skip"
++        else:
++            sens = None
++        # Initial-condition convergence test at the posterior median: z_init vs 2 z_init
+         build_2x = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA,
+                                            2.0 * FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+-        sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
+-        if sens is None:
++        if sens != "skip":
++            sens = fR.ic_sensitivity(build_bg, build_2x, tuple(med[1:1 + n_param_theta]), tuple(med[1 + n_param_theta:]))
++        if sens == "skip":
++            pass
++        elif sens is None:
+             extra_lines += ["IC convergence test: background could not be solved at the posterior median"]
+         else:
+             extra_lines += [f"IC convergence test: max|E2(z_init={FR_Z_INIT:g})/E2(z_init={2*FR_Z_INIT:g}) - 1| = {sens:.2e} on z in [0, 2.4]"]
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
+index bbbaf0b..cbf0329 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/results_io.py
+@@ -15,7 +15,8 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model,
+     print("\nExporting 1D Posterior Histogram data files...")
+     clean_names = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0",
+                    r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta",
+-                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR"}
++                   r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR",
++                   r"$\Lambda_{f(R)}$": "Lambda_fR"}
+ 
+     for i, lbl in enumerate(labels):
+         col_data = flat_chain[:, i]
+@@ -40,6 +41,11 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model,
+         print(f"    -> Exported data track for {lbl} into: {txt_filename}")
+ 
+ 
++def _fmt(v):
++    """4 decimals as before; scientific notation only for tiny non-zero values (e.g. alpha ~ 1e-5)."""
++    return f"{v:.3e}" if (v != 0 and abs(v) < 1e-3) else f"{v:.4f}"
++
++
+ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, output_dir,
+                              use_snia, use_cc, use_bao, use_cluster,
+                              fixed_delta, fixed_alpha, extra_lines=None):
+@@ -69,8 +75,8 @@ def write_posterior_summary(flat_chain, model_config, chosen_model, run_mode, ou
+             lo = med - np.percentile(col, 16)
+             hi = np.percentile(col, 84) - med
+ 
+-            print(f"    {lbl:14s}  {med:.4f}  +{hi:.4f} / -{lo:.4f}")
+-            f.write(f"{lbl:15s} | {med:10.4f} | {hi:22.4f} | {lo:22.4f}\n")
++            print(f"    {lbl:14s}  {_fmt(med)}  +{_fmt(hi)} / -{_fmt(lo)}")
++            f.write(f"{lbl:15s} | {_fmt(med):>10s} | {_fmt(hi):>22s} | {_fmt(lo):>22s}\n")
+ 
+         if chosen_model in ["Custom_Universal", "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha"]:
+             f.write(f"----------------------------------------------------------\n")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+index 1d2e793..92be0e2 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+@@ -59,11 +59,12 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
+             raise ValueError(f"Fixed n={val} is outside the prior range {fR.FR_PRIOR_BOUNDS['n_power']} or equals 1 (f = (1+alpha)R, i.e. GR).")
+ 
+     names = fcfg["param_names"]
+-    if fr_fixed and all(nm in fr_fixed for nm in (names if fr_model == "power_law" else ["alpha"] if fr_model == "R_log_R" else [])):
++    if names and all(nm in fr_fixed for nm in names):
+         full = tuple(fr_fixed[nm] for nm in names)
+         if not np.isfinite(fcfg["prior_func"](full)):
+             rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
+-                    "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)"}[fr_model]
++                    "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)",
++                    "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds"}[fr_model]
+             raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
+                              f"Bounds: {fR.FR_PRIOR_BOUNDS}")
+ 

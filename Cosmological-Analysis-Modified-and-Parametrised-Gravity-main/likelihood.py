@@ -98,8 +98,13 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
         raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter "
                          f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
 
+    analytic = fcfg.get("analytic_background")
+
     def build(theta_p, theta_fr, return_reason=False):
         theta = expand(theta_p)
+        if analytic is not None:                 # perturbative attractor instead of the ODE
+            out = analytic(omega_m_func(theta), expand_fr(theta_fr), fr_z_init)
+            return out if return_reason else out[0]
         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
                                    derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
     return build
