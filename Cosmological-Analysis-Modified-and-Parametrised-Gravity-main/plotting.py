@@ -130,3 +130,31 @@ def generate_model_specific_plots(flat_chain, chosen_model_name, model_config, o
     else:
         plot_dark_energy_potential(flat_chain, chosen_model_name, model_config["potential_func"],
                                     output_dir, run_mode)
+
+def plot_traces(flat_chain, labels, model_name, output_dir, run_mode, n_walkers):
+    """
+    Walker trace plot (one panel per parameter).  emcee's flat chain is step-major
+    (index = step * n_walkers + walker), so it is reshaped back to (steps, walkers, ndim).
+
+    n_walkers is NOT stored in the .npy file.  If it is wrong but still divides the chain
+    length, the traces are silently scrambled (walkers interleaved) -- pass the value the
+    chain was actually produced with.
+    """
+    n_samples, ndim = flat_chain.shape
+    if n_samples % n_walkers:
+        raise ValueError(f"chain has {n_samples} samples, not divisible by n_walkers={n_walkers}")
+    reshaped = flat_chain.reshape(n_samples // n_walkers, n_walkers, ndim)
+
+    fig, axes = plt.subplots(ndim, 1, figsize=(9, 2 * ndim), sharex=True, squeeze=False)
+    for i in range(ndim):
+        ax = axes[i, 0]
+        ax.plot(reshaped[:, :, i], color="black", alpha=0.15)
+        ax.set_ylabel(labels[i], fontsize=12)
+        ax.grid(True, alpha=0.3)
+    axes[-1, 0].set_xlabel("MCMC Step Index", fontsize=12)
+    fig.suptitle(f"Walker Diagnostics: {model_name}", y=0.98)
+
+    out_path = os.path.join(output_dir, f"traces_{model_name}_{run_mode}.pdf")
+    fig.savefig(out_path, bbox_inches="tight", dpi=200)
+    print(f"Walker traces saved to: {out_path}")
+    return fig

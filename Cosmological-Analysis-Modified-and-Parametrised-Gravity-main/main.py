@@ -6,16 +6,16 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import multiprocessing
+import sys
 import numpy as np
 import emcee
-import matplotlib.pyplot as plt
 
 import data_loader as dl
 import fR
 from run_config import get_run_config
 from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
                         suggest_alpha_start, suggest_n_start)
-from plotting import plot_corner, generate_model_specific_plots
+from plot_selector import PlotContext, resolve_keys, run_plots
 from results_io import save_histogram_data, write_posterior_summary
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -47,6 +47,15 @@ USE_BAO     = True   # Baryon Acoustic Oscillations H(z)
 USE_CLUSTER = True   # Galaxy Clustering H(z)
 # ────────────────────────────────────────────────────────────────────────────
 
+# ── Graphs made at the end of the run ───────────────────────────────────────
+# Per-model plots: "corner", "traces", "potential", "omega_components", or "model" for all four.
+# Plots that do not apply to the chosen model (e.g. "potential" for an f(R) run) are skipped with a message.
+# [] = no graphs (numbers and chain are still saved).  Comparison plots (violin, box, hubble, contours, ...)
+# need several chains: make them afterwards with  python make_plots.py  (interactive menu or --plots).
+PLOTS        = ["corner", "potential", "omega_components"]   # default = what this script always did
+SHOW_FIGURES = True      # open the figure windows when finished; False = only write the PDFs
+# ────────────────────────────────────────────────────────────────────────────
+
 # MANUAL ASSIGNMENTS FOR CONSTANT PARAMETERS ACROSS CUSTOM SCENARIOS
 FIXED_DELTA  = 0.050                      # Used in Custom_Universal and param_Hubble_fixed_delta
 FIXED_ALPHA  = 0.170                      # Used in Custom_Universal and param_Hubble_fixed_alpha
@@ -73,6 +82,7 @@ RANDOM_SEED = None                          # int -> reproducible chain (same re
 if FR_Z_INIT is None:
     FR_Z_INIT = fR.FR_REGISTRY[FR_MODEL].get("z_init_default", 40.0)
 model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
+PLOTS = resolve_keys(PLOTS, scope="model")   # typo in PLOTS fails now, not after the MCMC run
 RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
 n_param_theta = model_config["n_param_theta"]
 
@@ -252,15 +262,8 @@ if __name__ == "__main__":
     save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, RUN_TAG, bins=50)
 
     # ════════════════════════════════════════════════════════════════════════════
-    # GENERATE CORNER PLOTS
+    # GENERATE THE SELECTED GRAPHS (PLOTS switchboard above)
     # ════════════════════════════════════════════════════════════════════════════
-    plot_corner(flat_chain, model_config["labels"], RUN_TAG, model_output_dir, RUN_MODE)
-
-    # ════════════════════════════════════════════════════════════════════════════
-    # GENERATE COMPONENT OR POTENTIAL TRACES
-    # ════════════════════════════════════════════════════════════════════════════
-    generate_model_specific_plots(flat_chain, RUN_TAG, model_config, model_output_dir, RUN_MODE,
-                                   FIXED_DELTA, FIXED_ALPHA)
-
-    print("\nOpening active interactive figure windows... Close graphics window to exit pipeline.")
-    plt.show()
+    plot_ctx = PlotContext.from_main(sys.modules[__name__], graphs_dir=base_graph_dir, show=SHOW_FIGURES)
+    if PLOTS:
+        run_plots(PLOTS, plot_ctx, {RUN_TAG: flat_chain})
