@@ -1,36 +1,19 @@
 # plot_walk_traces.py
-import os
+"""
+Walker trace plots of one saved chain (graphs/<tag>/).  The drawing code now lives in plotting.plot_traces;
+this script keeps the old entry point + switchboard.  To pick plots/models on the fly use make_plots.py.
+"""
 import numpy as np
-import matplotlib.pyplot as plt
-from run_config import get_run_config, split_tag
+
+import main
+from plot_selector import PlotContext, find_chains, run_plots
 
 CHOSEN_MODEL = "LCDM"   # run tag: "<parameterisation>" or "<parameterisation>__<fR_model>"
-RUN_MODE = "joint"
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Run mode (datasets) and the walker count (needed to un-flatten the chain) come from main.py.
 
-npy_file = os.path.join(SCRIPT_DIR, f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy")
-if os.path.exists(npy_file):
-    chain = np.load(npy_file)
-    labels = get_run_config(*split_tag(CHOSEN_MODEL))["labels"]
-    ndim = len(labels)
-    
-    # Reconstruct separate walker paths
-    n_walkers = 64
-    n_steps = len(chain) // n_walkers
-    reshaped = chain.reshape(n_steps, n_walkers, ndim)
-    
-    fig, axes = plt.subplots(ndim, 1, figsize=(9, 2 * ndim), sharex=True)
-    if ndim == 1: axes = [axes]
-    
-    for i in range(ndim):
-        axes[i].plot(reshaped[:, :, i], color="black", alpha=0.15)
-        axes[i].set_ylabel(labels[i], fontsize=12)
-        axes[i].grid(True, alpha=0.3)
-        
-    axes[-1].set_xlabel("MCMC Step Index", fontsize=12)
-    plt.suptitle(f"Walker Diagnostics: {CHOSEN_MODEL}", y=0.98)
-    
-    out_path = os.path.join(SCRIPT_DIR, "graphs", CHOSEN_MODEL, f"traces_{CHOSEN_MODEL}.pdf")
-    plt.savefig(out_path, bbox_inches="tight", dpi=200)
-    print(f"Diagnostics traces generated at: {out_path}")
-    plt.show()
+if __name__ == "__main__":
+    ctx = PlotContext.from_main(main)
+    found = find_chains(ctx.run_mode, ctx.root)
+    if CHOSEN_MODEL not in found:
+        raise SystemExit(f"No chain for '{CHOSEN_MODEL}' with run mode '{ctx.run_mode}'. Found: {list(found)}")
+    run_plots(["traces"], ctx, {CHOSEN_MODEL: np.load(found[CHOSEN_MODEL])})

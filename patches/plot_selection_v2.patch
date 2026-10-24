@@ -1,0 +1,1429 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
+index e188f62..a0c7288 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/compare_posteriors.py
+@@ -1,280 +1,45 @@
+ # compare_posteriors.py
+-import os
++"""
++Model-comparison plots (graphs/Model_Comparisons/).  The drawing code now lives in comparison_plots.py;
++this script keeps the old entry point + switchboard.  To pick plots/models on the fly use make_plots.py.
++"""
+ import numpy as np
+-import matplotlib.pyplot as plt
+-from main import FIXED_ALPHA
+-from main import FIXED_DELTA, RUN_MODE
+-
+-# ════════════════════════════════════════════════════════════════════════════
+-# SWITCHBOARD CONFIGURATION — CHOOSE MODELS AND MODES TO OVERLAY
+-# ════════════════════════════════════════════════════════════════════════════
+-#RUN_MODE = "snia+cc+bao+clu"  # "snia" or "joint"
+-
+-# Add or remove any models you wish to compare here! (Supports 1 to all 6)
+-# Entries are run tags: "<parameterisation>" for FR_MODEL="GR", or "<parameterisation>__<fR_model>"
+-# for f(R) runs (e.g. "LCDM__power_law").  Note: in f(R) runs the Omega_m column is in anchor units.
+-MODELS_TO_COMPARE = ["LCDM", "wCDM"]
+-
+-# SMOOTHNESS ADJUSTMENT: Decrease this number (e.g., 100, 150) to make curves smoother
+-HIST_BINS = 16  
+ 
+-
+-
+-# Plot layout aesthetic styles
+-COLORS = ["#2b5c8f", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02"]
+-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "graphs", "Model_Comparisons")
+-os.makedirs(OUTPUT_DIR, exist_ok=True)
++import main
++from plot_selector import PlotContext, find_chains, run_plots
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+-# CORE DATA EXTRACTION & DENSITY RESOLUTION
++# SWITCHBOARD CONFIGURATION — CHOOSE MODELS AND PLOTS
+ # ════════════════════════════════════════════════════════════════════════════
+-extracted_data = {}
++# Entries are run tags: "<parameterisation>" for FR_MODEL="GR", or "<parameterisation>__<fR_model>[__param=value...]"
++# (e.g. "LCDM__power_law__alpha=-2__n=0.5").  The run mode (datasets) is main.RUN_MODE.
++MODELS_TO_COMPARE = ["LCDM", "wCDM"]
+ 
+-print(f"--- Loading MCMC Chains for Run Mode: [{RUN_MODE}] ---")
+-for model_name in MODELS_TO_COMPARE:
+-    npy_file = os.path.join(SCRIPT_DIR, "chains", f"chain_{model_name}_{RUN_MODE}.npy")
+-    
+-    if not os.path.exists(npy_file):
+-        print(f"❌ Warning: Chain file '{npy_file}' not found! Skip model {model_name}.")
+-        continue
+-        
+-    # Load raw flattened chain matrix [N_samples, N_dimensions]
+-    chain = np.load(npy_file)
+-    
+-    # H0 is universally tracked at column index 0 across all pipelines
+-    h0_samples = chain[:, 0]
+-    
+-    # Resolve the matter parameter column.
+-    # Every model in MODEL_REGISTRY tracks its "matter-like" parameter at
+-    # chain column 1 EXCEPT the three custom parametrized-Hubble models,
+-    # which track Omega_0 there instead. Default to Omega_m and only switch
+-    # to Omega_0 for the explicit custom-model exceptions, so any current or
+-    # future standard model (CPL, JBP, HDE, IDE, ...) is covered automatically
+-    # instead of needing to be added to an allowlist by hand.
+-    custom_hubble_models = ["param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"]
+-    if model_name in custom_hubble_models:
+-        matter_samples = chain[:, 1]
+-        param_label = r"$\Omega_0$ [$\Omega_1(z=0)$]"
+-    else:
+-        matter_samples = chain[:, 1]
+-        param_label = r"$\Omega_m$"
++# Any of: "hist", "box", "violin", "contour_vs_ref", "contour_all", "hubble"  (or "comparison" for all of them).
++PLOTS = ["hist", "box", "contour_vs_ref", "contour_all"]
+ 
+-    extracted_data[model_name] = {
+-        "H0": h0_samples,
+-        "Matter": matter_samples,
+-        "Label": param_label
+-    }
+-    print(f"   Successfully loaded {len(h0_samples)} samples from {model_name}")
++# Parameters compared in hist/box/violin and on the contour axes.  Names: H0, Omega_m, Omega_0, w0, wa,
++# alpha_fR, n_fR, Lambda_fR, ... and "matter" (= Omega_m or Omega_0).  f(R) runs have no Omega_m (anchored):
++# compare them in e.g. ["H0", "alpha_fR"].  A model lacking a parameter is left out of that panel.
++PARAMS = ["H0", "matter"]
++PAIR = ["H0", "matter"]
++REFERENCE = None     # run tag drawn against every other model in contour_vs_ref; None -> "LCDM" if listed, else the first
+ 
++# SMOOTHNESS ADJUSTMENT: decrease (e.g. 100, 150 -> fewer bins) to make the histogram curves smoother
++HIST_BINS = 16
+ # ════════════════════════════════════════════════════════════════════════════
+-# PLOTTING ROUTINES
+-# ════════════════════════════════════════════════════════════════════════════
+-if not extracted_data:
+-    print("❌ Critical Error: No datasets were loaded. Check your .npy file sources.")
+-    exit()
+-
+-# ── PLOT 1: H0 HISTOGRAM POSTERIOR COMPARISON ──
+-print(f"\nGenerating H0 Poster Distributions Overlay (Bins={HIST_BINS})...")
+-plt.figure(figsize=(8, 5.5))
+-
+-for idx, (model_name, data) in enumerate(extracted_data.items()):
+-    color = COLORS[idx % len(COLORS)]
+-    # Use hist type='step' to create elegant overlapping scientific contours
+-    plt.hist(data["H0"], bins=HIST_BINS, density=True, histtype="step", lw=2.5,
+-             color=color, label=f"{model_name}")
+-    # Optional alpha filling to make overlaps easily recognizable
+-    plt.hist(data["H0"], bins=HIST_BINS, density=True, histtype="stepfilled", 
+-             color=color, alpha=0.04)
+-
+-plt.xlabel(r"Hubble Constant $H_0$ $\rm [km/s/Mpc]$", fontsize=13)
+-plt.ylabel(r"Probability Density $P(H_0 | \rm Data)$", fontsize=13)
+-plt.title(f"Hubble Parameter Constraint Discrepancy Analysis ({RUN_MODE})", fontsize=13, pad=12)
+-plt.grid(True, linestyle="--", alpha=0.4)
+-plt.legend(loc="upper right", fontsize=10, framealpha=0.9)
+-
+-h0_save_path = os.path.join(OUTPUT_DIR, f"comparison_H0_{RUN_MODE}.pdf")
+-plt.savefig(h0_save_path, bbox_inches="tight")
+-print(f"   -> Saved H0 comparison plot to: {h0_save_path}")
+-
+-
+-# ── PLOT 2: MATTER PARAMETER HISTOGRAM OVERLAY ──
+-print(f"Generating Matter Component Posterior Distributions Overlay (Bins={HIST_BINS})...")
+-plt.figure(figsize=(8, 5.5))
+-
+-for idx, (model_name, data) in enumerate(extracted_data.items()):
+-    if data["Matter"] is None:
+-        continue
+-    color = COLORS[idx % len(COLORS)]
+-    
+-    plt.hist(data["Matter"], bins=HIST_BINS, density=True, histtype="step", lw=2.5,
+-             color=color, label=f"{model_name}")
+-    plt.hist(data["Matter"], bins=HIST_BINS, density=True, histtype="stepfilled", 
+-             color=color, alpha=0.04)
+-
+-plt.xlabel(r"Matter / Base Density SCALE $\Omega_x(z=0)$", fontsize=13)
+-plt.ylabel(r"Probability Density $P(\Omega_x | \rm Data)$", fontsize=13)
+-plt.title(f"Matter Density vs Custom $\\Omega_1(z=0)$ Posteriors ({RUN_MODE})", fontsize=13, pad=12)
+-plt.grid(True, linestyle="--", alpha=0.4)
+-plt.legend(loc="upper right", fontsize=10, framealpha=0.9)
+-
+-matter_save_path = os.path.join(OUTPUT_DIR, f"comparison_Matter_{RUN_MODE}.pdf")
+-plt.savefig(matter_save_path, bbox_inches="tight")
+-print(f"   -> Saved Matter parameter comparison plot to: {matter_save_path}")
+-
+-
+-# ── PLOT 3: MEDIAN ± 1σ BOX PLOT ACROSS MODELS ──
+-print(f"Generating Median/Error Box Plot Comparison...")
+-
+-def _custom_box_stats(samples, label):
+-    """
+-    Builds a single matplotlib bxp() stats dict using the 16/50/84 percentile
+-    convention used everywhere else in this codebase (1-sigma equivalent),
+-    rather than matplotlib's default 25/50/75 quartile box.
+-    """
+-    med = np.median(samples)
+-    lo  = np.percentile(samples, 16)
+-    hi  = np.percentile(samples, 84)
+-    return {
+-        "label": label,
+-        "med": med,
+-        "q1": lo,        # bottom of box -> 16th percentile
+-        "q3": hi,        # top of box    -> 84th percentile
+-        "whislo": lo,    # no extra whisker beyond the 1-sigma box
+-        "whishi": hi,
+-        "fliers": [],
+-    }
+-
+-model_names = list(extracted_data.keys())
+-fig, (axb1, axb2) = plt.subplots(1, 2, figsize=(11, 5.5))
+-
+-# H0 panel
+-h0_stats = [_custom_box_stats(extracted_data[m]["H0"], m) for m in model_names]
+-bp1 = axb1.bxp(h0_stats, showfliers=False, patch_artist=True, widths=0.5)
+-for idx, box in enumerate(bp1["boxes"]):
+-    box.set_facecolor(COLORS[idx % len(COLORS)])
+-    box.set_alpha(0.5)
+-axb1.set_ylabel(r"Hubble Constant $H_0$ $\rm [km/s/Mpc]$", fontsize=12)
+-axb1.set_title(r"$H_0$ Median $\pm 1\sigma$", fontsize=12)
+-axb1.grid(True, linestyle="--", alpha=0.4, axis="y")
+-
+-# Matter/Omega_0 panel (skip models with no matter samples, same as Plot 2)
+-matter_models = [m for m in model_names if extracted_data[m]["Matter"] is not None]
+-matter_stats = [_custom_box_stats(extracted_data[m]["Matter"], m) for m in matter_models]
+-if matter_stats:
+-    bp2 = axb2.bxp(matter_stats, showfliers=False, patch_artist=True, widths=0.5)
+-    for idx, box in enumerate(bp2["boxes"]):
+-        box.set_facecolor(COLORS[idx % len(COLORS)])
+-        box.set_alpha(0.5)
+-axb2.set_ylabel(r"Matter / Base Density Scale $\Omega_x(z=0)$", fontsize=12)
+-axb2.set_title(r"$\Omega_m$ / $\Omega_0$ Median $\pm 1\sigma$", fontsize=12)
+-axb2.grid(True, linestyle="--", alpha=0.4, axis="y")
+-
+-fig.suptitle(f"Posterior Median & 1σ Spread Across Models ({RUN_MODE})", fontsize=13, y=1.02)
+-plt.tight_layout()
+-
+-box_save_path = os.path.join(OUTPUT_DIR, f"comparison_BoxPlot_{RUN_MODE}.pdf")
+-plt.savefig(box_save_path, bbox_inches="tight")
+-print(f"   -> Saved median/error box plot to: {box_save_path}")
+-
+-
+-
+-
+-
+-# ── PLOT 4: PAIRWISE 2D CONTOUR (BANANA/ELLIPSE) OVERLAYS AGAINST LCDM ──
+-# Different models carry different numbers of free parameters (LCDM has 2,
+-# wCDM has 3, CPL/JBP have 4, ...), so a full corner plot can't overlay all
+-# of them in one figure. What IS common to every model is the (H0, Matter)
+-# pair already extracted above, so each non-LCDM model gets its own 2D
+-# contour overlay against LCDM in that shared subspace.
+-#
+-# Uses corner.hist2d() directly rather than corner.corner(), since
+-# corner.corner() always draws the 1D marginal histograms on the diagonal.
+-# hist2d() draws ONLY the 2D contour (the banana/ellipse shape itself) with
+-# no marginal panels.
+-import corner
+-
+-if "LCDM" not in extracted_data:
+-    print("\n⚠ Skipping pairwise corner comparisons: LCDM chain not loaded.")
+-else:
+-    lcdm_data = extracted_data["LCDM"]
+-    if lcdm_data["Matter"] is None:
+-        print("\n⚠ Skipping pairwise corner comparisons: LCDM has no Matter samples.")
+-    else:
+-        lcdm_H0, lcdm_Matter = lcdm_data["H0"], lcdm_data["Matter"]
+-
+-        other_models = [m for m in model_names if m != "LCDM" and extracted_data[m]["Matter"] is not None]
+-        if not other_models:
+-            print("\n⚠ No other models with Matter samples available for pairwise contour comparison.")
+-
+-        for idx, model_name in enumerate(other_models, start=1):
+-            print(f"Generating pairwise 2D contour overlay: LCDM vs {model_name}...")
+-            other_data = extracted_data[model_name]
+-
+-            lcdm_color = COLORS[0]
+-            other_color = COLORS[idx % len(COLORS)]
+-            if other_color == lcdm_color:
+-                other_color = COLORS[(idx + 1) % len(COLORS)]
+-
+-            fig, ax = plt.subplots(figsize=(6.5, 6))
+-
+-            corner.hist2d(lcdm_H0, lcdm_Matter, ax=ax, color=lcdm_color,
+-                          levels=(1 - np.exp(-0.5), 1 - np.exp(-2)),  # 1-sigma, 2-sigma
+-                          plot_datapoints=False, plot_density=False, fill_contours=True)
+-            corner.hist2d(other_data["H0"], other_data["Matter"], ax=ax, color=other_color,
+-                          levels=(1 - np.exp(-0.5), 1 - np.exp(-2)),
+-                          plot_datapoints=False, plot_density=False, fill_contours=True)
+-
+-            ax.set_xlabel(r"$H_0$ $\rm [km/s/Mpc]$", fontsize=13)
+-            ax.set_ylabel(r"Matter Density $\Omega_x$", fontsize=13)
+-            ax.set_title(f"LCDM vs {model_name} ({RUN_MODE})", fontsize=13, pad=12)
+-
+-            legend_handles = [
+-                plt.Line2D([0], [0], color=lcdm_color, lw=2.5, label="LCDM"),
+-                plt.Line2D([0], [0], color=other_color, lw=2.5, label=model_name),
+-            ]
+-            ax.legend(handles=legend_handles, loc="best", fontsize=11, framealpha=0.9)
+-
+-            pair_save_path = os.path.join(OUTPUT_DIR, f"comparison_contour_LCDM_vs_{model_name}_{RUN_MODE}.pdf")
+-            fig.savefig(pair_save_path, bbox_inches="tight")
+-            
+-            print(f"   -> Saved pairwise 2D contour overlay to: {pair_save_path}")
+-
+-print("\nProcessing complete. Displaying generated figures...")
+-plt.show()
+-
+ 
+-# ── PLOT 5: ALL-MODELS COMBINED 2D CONTOUR OVERLAY ──
+-# Same (H0, Matter) shared subspace as Plot 5, but every loaded model is
+-# drawn together on one panel instead of one-at-a-time against LCDM, so you
+-# can see how the whole set of degeneracy "bananas" sit relative to each
+-# other, not just relative to LCDM individually.
+-all_contour_models = [m for m in model_names if extracted_data[m]["Matter"] is not None]
+- 
+-if len(all_contour_models) < 2:
+-    print("\n⚠ Skipping combined all-models contour plot: need at least 2 models with Matter samples.")
+-else:
+-    print(f"\nGenerating combined contour overlay for all models: {all_contour_models}...")
+-    fig, ax = plt.subplots(figsize=(7.5, 6.5))
+- 
+-    legend_handles = []
+-    for idx, model_name in enumerate(all_contour_models):
+-        color = COLORS[idx % len(COLORS)]
+-        data = extracted_data[model_name]
+-        corner.hist2d(data["H0"], data["Matter"], ax=ax, color=color,
+-                      levels=(1 - np.exp(-0.5), 1 - np.exp(-2)),
+-                      plot_datapoints=False, plot_density=False, fill_contours=True)
+-        legend_handles.append(plt.Line2D([0], [0], color=color, lw=2.5, label=model_name))
+- 
+-    ax.set_xlabel(r"$H_0$ $\rm [km/s/Mpc]$", fontsize=13)
+-    ax.set_ylabel(r"Matter Density $\Omega_x$", fontsize=13)
+-    ax.set_title(f"All Models: $H_0$ vs Matter Density Posterior Contours ({RUN_MODE})", fontsize=13, pad=12)
+-    ax.legend(handles=legend_handles, loc="best", fontsize=10, framealpha=0.9)
+- 
+-    all_contour_save_path = os.path.join(OUTPUT_DIR, f"comparison_contour_AllModels_{RUN_MODE}.pdf")
+-    fig.savefig(all_contour_save_path, bbox_inches="tight")
+-    
+-    print(f"   -> Saved combined all-models contour overlay to: {all_contour_save_path}")
+- 
+-print("\nProcessing complete. Displaying generated figures...")
+-plt.show()
++if __name__ == "__main__":
++    ctx = PlotContext.from_main(main, hist_bins=HIST_BINS, params=tuple(PARAMS), pair=tuple(PAIR), reference=REFERENCE)
++    found = find_chains(ctx.run_mode, ctx.root)
++    print(f"--- Loading MCMC Chains for Run Mode: [{ctx.run_mode}] ---")
++    chains = {}
++    for tag in MODELS_TO_COMPARE:
++        if tag not in found:
++            print(f"❌ Warning: no chain file for '{tag}' (run mode {ctx.run_mode}). Skipping.  Found: {list(found)}")
++            continue
++        chains[tag] = np.load(found[tag])
++        print(f"   Loaded {len(chains[tag])} samples from {found[tag]}")
++    if not chains:
++        raise SystemExit("❌ Critical Error: No datasets were loaded. Check your .npy file sources.")
++    run_plots(PLOTS, ctx, chains)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/comparison_plots.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/comparison_plots.py
+new file mode 100644
+index 0000000..bb68165
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/comparison_plots.py
+@@ -0,0 +1,330 @@
++# comparison_plots.py
++"""
++Multi-model figures (everything that ends up in graphs/Model_Comparisons/).
++
++Any set of runs can be compared -- GR parameterisations, f(R) runs, or a mix -- in any parameters they
++share.  Each plot is a function  f(ctx, data)  where
++    ctx  : plot_selector.PlotContext  (run mode, output dir, which parameters, reference model, ...)
++    data : {run_tag: {"params": {name: (latex_label, samples)}, "chain": full chain}}  from extract_summary(),
++           in the order the models were requested.
++Parameters are addressed by name (see PARAM_NAMES: H0, Omega_m, w0, wa, alpha_fR, n_fR, Lambda_fR, ...).
++"matter" is an alias for Omega_m / Omega_0.  A model that does not sample a requested parameter is left out
++of that panel/figure (f(R) runs anchor Omega_m, so they have no Omega_m), and the plot says so.
++The functions only draw and save; showing / closing figures is done by plot_selector.run_plots.
++A function raises PlotSkipped when the selection cannot produce that plot.
++"""
++import os
++import numpy as np
++import matplotlib.pyplot as plt
++import corner
++
++import data_loader as dl
++import fR
++from likelihood import make_background_builder
++from run_config import get_run_config, split_tag
++
++COLORS = ["#2b5c8f", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
++          "#e6ab02", "#a6761d", "#666666", "#1b9e77", "#e41a1c"]
++CONTOUR_LEVELS = (1 - np.exp(-0.5), 1 - np.exp(-2))     # 1 sigma, 2 sigma
++
++# chain label -> parameter name
++PARAM_NAMES = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0", r"$w_0$": "w0", r"$w_a$": "wa",
++               r"$\alpha$": "alpha", r"$\delta$": "delta", r"$c$": "c", r"$\xi$": "xi",
++               r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR", r"$\Lambda_{f(R)}$": "Lambda_fR"}
++MATTER_ALIASES = ("Omega_m", "Omega_0")                  # what "matter" resolves to, per model
++DEFAULT_PARAMS = ("H0", "matter")
++DEFAULT_PAIR = ("H0", "matter")
++
++
++class PlotSkipped(Exception):
++    """The plot is not applicable to the selected models (not an error)."""
++
++
++def param_name(label):
++    return PARAM_NAMES.get(label, label.strip("$").replace("\\", "").replace("{", "").replace("}", ""))
++
++
++def extract_summary(tag, chain):
++    """{"params": {name: (label, samples)}, "chain": chain}; also adds the "matter" alias when present."""
++    labels = get_run_config(*split_tag(tag))["labels"]
++    if chain.ndim != 2 or chain.shape[1] != len(labels):
++        raise ValueError(f"chain for '{tag}' has shape {chain.shape} but the model defines "
++                         f"{len(labels)} parameters {labels}; chain from an older version of the code?")
++    params = {param_name(lb): (lb, chain[:, i]) for i, lb in enumerate(labels)}
++    for m in MATTER_ALIASES:
++        if m in params:
++            params["matter"] = params[m]
++            break
++    return {"params": params, "chain": chain}
++
++
++def parameters_of(tag):
++    """Parameter names a run tag samples (for menus / --list); no chain needed."""
++    names = [param_name(lb) for lb in get_run_config(*split_tag(tag))["labels"]]
++    return names + (["matter"] if any(m in names for m in MATTER_ALIASES) else [])
++
++
++# ── helpers ─────────────────────────────────────────────────────────────────
++def _color(data, tag):
++    return COLORS[list(data).index(tag) % len(COLORS)]       # a model keeps its colour in every figure
++
++
++def _having(data, *names):
++    """Models that sample all of the named parameters."""
++    return [t for t, d in data.items() if all(n in d["params"] for n in names)]
++
++
++def _axis_label(data, models, name):
++    if name == "matter":
++        return r"Matter density $\Omega_x(z=0)$  ($\Omega_m$ or $\Omega_0$)"
++    return data[models[0]]["params"][name][0]
++
++
++def _note_missing(data, name, models):
++    gone = [t for t in data if t not in models]
++    if gone:
++        print(f"   (no sampled '{name}' in: {', '.join(gone)})")
++
++
++def _check_names(data, names):
++    known = sorted({n for d in data.values() for n in d["params"]})
++    bad = [n for n in names if n not in known]
++    if bad:
++        raise PlotSkipped(f"parameter(s) {bad} not sampled by any selected model (available: {known})")
++
++
++def _save(fig, path):
++    fig.savefig(path, bbox_inches="tight")
++    print(f"   -> saved: {path}")
++
++
++def _rotate_ticks(ax):
++    for t in ax.get_xticklabels():
++        t.set_rotation(30)
++        t.set_ha("right")
++
++
++def _fname(prefix, name, run_mode):
++    legacy = {"H0": "H0", "matter": "Matter"}                  # keep the historical file names
++    return f"{prefix}_{legacy.get(name, name)}_{run_mode}.pdf"
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# 1D POSTERIOR OVERLAYS  (one figure per chosen parameter)
++# ════════════════════════════════════════════════════════════════════════════
++def plot_hist(ctx, data):
++    _check_names(data, ctx.params)
++    figs = []
++    for name in ctx.params:
++        models = _having(data, name)
++        if not models:
++            print(f"   ! '{name}': no selected model samples it -- skipped")
++            continue
++        _note_missing(data, name, models)
++        fig = plt.figure(figsize=(8, 5.5))
++        for t in models:
++            s = data[t]["params"][name][1]
++            c = _color(data, t)
++            plt.hist(s, bins=ctx.hist_bins, density=True, histtype="step", lw=2.5, color=c, label=t)
++            plt.hist(s, bins=ctx.hist_bins, density=True, histtype="stepfilled", color=c, alpha=0.04)
++        xl = _axis_label(data, models, name)
++        plt.xlabel(xl, fontsize=13)
++        plt.ylabel("Probability Density", fontsize=13)
++        plt.title(f"Posterior of {xl} ({ctx.run_mode})", fontsize=13, pad=12)
++        plt.grid(True, linestyle="--", alpha=0.4)
++        plt.legend(loc="best", fontsize=10, framealpha=0.9)
++        _save(fig, os.path.join(ctx.comparison_dir(), _fname("comparison", name, ctx.run_mode)))
++        figs.append(fig)
++    if not figs:
++        raise PlotSkipped("no figure could be made")
++    return figs
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# BOX / VIOLIN SUMMARIES  (median +- 1 sigma, 16/50/84 percentiles as everywhere else)
++# One panel per chosen parameter.
++# ════════════════════════════════════════════════════════════════════════════
++def _box_stats(samples, label):
++    lo, med, hi = np.percentile(samples, [16, 50, 84])
++    return {"label": label, "med": med, "q1": lo, "q3": hi, "whislo": lo, "whishi": hi, "fliers": []}
++
++
++def _panels(ctx, data, draw, fname, suptitle):
++    _check_names(data, ctx.params)
++    fig, axes = plt.subplots(1, len(ctx.params), figsize=(5.5 * len(ctx.params), 5.5), squeeze=False)
++    for ax, name in zip(axes[0], ctx.params):
++        models = _having(data, name)
++        if models:
++            _note_missing(data, name, models)
++            draw(ax, data, models, name)
++            ax.set_ylabel(_axis_label(data, models, name), fontsize=12)
++            ax.set_title(name, fontsize=12)
++            _rotate_ticks(ax)
++        else:
++            ax.text(0.5, 0.5, f"no selected model samples '{name}'", ha="center", va="center", transform=ax.transAxes)
++        ax.grid(True, linestyle="--", alpha=0.4, axis="y")
++    fig.suptitle(f"{suptitle} ({ctx.run_mode})", fontsize=13, y=1.02)
++    fig.tight_layout()
++    _save(fig, os.path.join(ctx.comparison_dir(), f"{fname}_{ctx.run_mode}.pdf"))
++    return fig
++
++
++def plot_box(ctx, data):
++    def draw(ax, data, models, name):
++        bp = ax.bxp([_box_stats(data[t]["params"][name][1], t) for t in models],
++                    showfliers=False, patch_artist=True, widths=0.5)
++        for box, t in zip(bp["boxes"], models):
++            box.set_facecolor(_color(data, t)); box.set_alpha(0.5)
++    return _panels(ctx, data, draw, "comparison_BoxPlot", "Posterior Median & 1σ Spread Across Models")
++
++
++def plot_violin(ctx, data):
++    def draw(ax, data, models, name):
++        samples = [data[t]["params"][name][1] for t in models]
++        parts = ax.violinplot(samples, positions=range(1, len(models) + 1), widths=0.8,
++                              showextrema=False, showmedians=False)
++        for body, t in zip(parts["bodies"], models):
++            body.set_facecolor(_color(data, t)); body.set_edgecolor("black"); body.set_alpha(0.5)
++        for pos, s in enumerate(samples, start=1):
++            lo, med, hi = np.percentile(s, [16, 50, 84])
++            ax.vlines(pos, lo, hi, color="black", lw=3, zorder=3)                       # 16-84 % range
++            ax.scatter([pos], [med], color="white", edgecolor="black", zorder=4, s=28)  # median
++        ax.set_xticks(range(1, len(models) + 1))
++        ax.set_xticklabels(models)
++    return _panels(ctx, data, draw, "comparison_Violin", "Posterior Distributions Across Models; bar = 16-84 %, dot = median")
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# 2D CONTOURS in a chosen parameter pair (ctx.pair, default H0 vs matter).
++# corner.hist2d draws the contour only (corner.corner would add 1D marginals).
++# ════════════════════════════════════════════════════════════════════════════
++def _contour(ax, d, pair, color):
++    corner.hist2d(d["params"][pair[0]][1], d["params"][pair[1]][1], ax=ax, color=color, levels=CONTOUR_LEVELS,
++                  plot_datapoints=False, plot_density=False, fill_contours=True)
++
++
++def _pair_suffix(pair):
++    return "" if tuple(pair) == DEFAULT_PAIR else f"_{pair[0]}-{pair[1]}"
++
++
++def _contour_axes(ax, data, models, pair):
++    ax.set_xlabel(_axis_label(data, models, pair[0]), fontsize=13)
++    ax.set_ylabel(_axis_label(data, models, pair[1]), fontsize=13)
++
++
++def _pair(ctx, data):
++    pair = tuple(ctx.pair)
++    _check_names(data, pair)
++    return pair
++
++
++def plot_contour_vs_ref(ctx, data):
++    """Each model's contour overlaid on a reference model's (default: LCDM if selected, else the first model)."""
++    pair = _pair(ctx, data)
++    ref = ctx.reference or ("LCDM" if "LCDM" in data else next(iter(data)))
++    if ref not in data:
++        raise PlotSkipped(f"reference '{ref}' is not among the selected models {list(data)}")
++    if ref not in _having(data, *pair):
++        raise PlotSkipped(f"reference '{ref}' does not sample both {pair[0]} and {pair[1]}")
++    others = [t for t in _having(data, *pair) if t != ref]
++    if not others:
++        raise PlotSkipped(f"no other selected model samples both {pair[0]} and {pair[1]}")
++    figs = []
++    for t in others:
++        print(f"   {ref} vs {t} ...")
++        rc, oc = _color(data, ref), _color(data, t)
++        fig, ax = plt.subplots(figsize=(6.5, 6))
++        _contour(ax, data[ref], pair, rc)
++        _contour(ax, data[t], pair, oc)
++        _contour_axes(ax, data, [ref], pair)
++        ax.set_title(f"{ref} vs {t} ({ctx.run_mode})", fontsize=11, pad=12)
++        ax.legend(handles=[plt.Line2D([0], [0], color=rc, lw=2.5, label=ref),
++                           plt.Line2D([0], [0], color=oc, lw=2.5, label=t)], loc="best", fontsize=10, framealpha=0.9)
++        _save(fig, os.path.join(ctx.comparison_dir(),
++                                f"comparison_contour_{ref}_vs_{t}{_pair_suffix(pair)}_{ctx.run_mode}.pdf"))
++        figs.append(fig)
++    return figs
++
++
++def plot_contour_all(ctx, data):
++    pair = _pair(ctx, data)
++    models = _having(data, *pair)
++    if len(models) < 2:
++        raise PlotSkipped(f"needs at least 2 selected models sampling both {pair[0]} and {pair[1]} "
++                          f"(have: {models or 'none'})")
++    _note_missing(data, f"{pair[0]}+{pair[1]}", models)
++    fig, ax = plt.subplots(figsize=(7.5, 6.5))
++    handles = []
++    for t in models:
++        c = _color(data, t)
++        _contour(ax, data[t], pair, c)
++        handles.append(plt.Line2D([0], [0], color=c, lw=2.5, label=t))
++    _contour_axes(ax, data, models, pair)
++    ax.set_title(f"All Models: {pair[0]} vs {pair[1]} Posterior Contours ({ctx.run_mode})", fontsize=12, pad=12)
++    ax.legend(handles=handles, loc="best", fontsize=9, framealpha=0.9)
++    _save(fig, os.path.join(ctx.comparison_dir(), f"comparison_contour_AllModels{_pair_suffix(pair)}_{ctx.run_mode}.pdf"))
++    return fig
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# HUBBLE DIAGRAM: best-fit (posterior-median) mu(z) and H(z) against SNIa and CC data
++# ════════════════════════════════════════════════════════════════════════════
++def _theory_curves(ctx, tag, median_params, z_grid):
++    param_name, fr_model, fr_fixed = split_tag(tag)
++    n_p = get_run_config(param_name, fr_model, fr_fixed, ctx.fr_omega_m_anchor)["n_param_theta"]
++    H0_fit = median_params[0]
++    theta_p, theta_fr = tuple(median_params[1:1 + n_p]), tuple(median_params[1 + n_p:])
++
++    # z_init is a per-f(R)-model default: only reuse main.py's value if it belongs to the same f(R) model
++    z_init = ctx.fr_z_init if fr_model == ctx.fr_model else fR.FR_REGISTRY[fr_model].get("z_init_default", 40.0)
++    bg = make_background_builder(param_name, fr_model, ctx.fixed_delta, ctx.fixed_alpha, z_init,
++                                 ctx.fr_omega_m_anchor, fr_fixed)(theta_p, theta_fr)
++    if bg is None:
++        raise ValueError(f"background could not be solved for '{tag}' at the posterior median")
++
++    H_curve = H0_fit * np.sqrt(bg.E2(z_grid))
++    fine_z = np.linspace(0.0, max(z_grid) * 1.05, 500)               # trapezoidal comoving distance
++    inv_E = 1.0 / np.sqrt(bg.E2(fine_z))
++    chi = np.concatenate([[0.0], np.cumsum(0.5 * (inv_E[:-1] + inv_E[1:]) * np.diff(fine_z))]) * (dl.C_LIGHT / H0_fit)
++    mu_curve = 5.0 * np.log10((1.0 + z_grid) * np.interp(z_grid, fine_z, chi)) + 25.0
++    return H_curve, mu_curve
++
++
++def plot_hubble(ctx, data):
++    z_sn, mu_sn, *_ = dl.load_pantheon_data()
++    z_cc, H_cc, err_cc = dl.load_cc_data()
++    z_grid = np.linspace(0.01, 2.3, 200)
++
++    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 10), sharex=True)
++    ax1.scatter(z_sn, mu_sn, color="gray", s=4, alpha=0.25, label="Pantheon+ SNIa Dataset", zorder=1)
++    ax2.errorbar(z_cc, H_cc, yerr=err_cc, fmt="o", color="black", ecolor="dimgray",
++                 elinewidth=1.5, capsize=3, ms=5, label="Cosmic Chronometers (CC)", zorder=2)
++
++    n_drawn = 0
++    for i, (m, d) in enumerate(data.items()):
++        try:
++            H_th, mu_th = _theory_curves(ctx, m, np.median(d["chain"], axis=0), z_grid)
++        except ValueError as exc:
++            print(f"   ! {exc}; model left out of the Hubble diagram")
++            continue
++        ax1.plot(z_grid, mu_th, color=_color(i), lw=2.5, label=f"Best-fit {m}", zorder=3)
++        ax2.plot(z_grid, H_th, color=_color(i), lw=2.5, label=f"Best-fit {m}", zorder=3)
++        n_drawn += 1
++    if n_drawn == 0:
++        plt.close(fig)
++        raise PlotSkipped("no model background could be evaluated")
++
++    ax1.set_ylabel(r"Distance Modulus $\mu(z)$", fontsize=13)
++    ax1.set_title("Cosmological Distance Curves & Expansion History Profiles", fontsize=14, pad=15)
++    ax1.grid(True, linestyle="--", alpha=0.4)
++    ax1.legend(loc="lower right", fontsize=11, framealpha=0.9)
++    ax1.set_ylim(32, 47)
++    ax2.set_xlabel(r"Redshift ($z$)", fontsize=13)
++    ax2.set_ylabel(r"Hubble Parameter $H(z)$ $\rm [km/s/Mpc]$", fontsize=13)
++    ax2.grid(True, linestyle="--", alpha=0.4)
++    ax2.legend(loc="upper left", fontsize=11, framealpha=0.9)
++    ax2.set_xlim(0, 2.3)
++    ax2.set_ylim(50, 250)
++    fig.tight_layout()
++    _save(fig, os.path.join(ctx.comparison_dir(), f"hubble_diagram_comparison_{ctx.run_mode}.pdf"))
++    return fig
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+index 20dc6a9..591651d 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+@@ -6,16 +6,16 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+     os.environ.setdefault(_v, "1")
+ 
+ import multiprocessing
++import sys
+ import numpy as np
+ import emcee
+-import matplotlib.pyplot as plt
+ 
+ import data_loader as dl
+ import fR
+ from run_config import get_run_config
+ from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
+                         suggest_alpha_start, suggest_n_start)
+-from plotting import plot_corner, generate_model_specific_plots
++from plot_selector import PlotContext, resolve_keys, run_plots
+ from results_io import save_histogram_data, write_posterior_summary
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+@@ -47,6 +47,15 @@ USE_BAO     = True   # Baryon Acoustic Oscillations H(z)
+ USE_CLUSTER = True   # Galaxy Clustering H(z)
+ # ────────────────────────────────────────────────────────────────────────────
+ 
++# ── Graphs made at the end of the run ───────────────────────────────────────
++# Per-model plots: "corner", "traces", "potential", "omega_components", or "model" for all four.
++# Plots that do not apply to the chosen model (e.g. "potential" for an f(R) run) are skipped with a message.
++# [] = no graphs (numbers and chain are still saved).  Comparison plots (violin, box, hubble, contours, ...)
++# need several chains: make them afterwards with  python make_plots.py  (interactive menu or --plots).
++PLOTS        = ["corner", "potential", "omega_components"]   # default = what this script always did
++SHOW_FIGURES = True      # open the figure windows when finished; False = only write the PDFs
++# ────────────────────────────────────────────────────────────────────────────
++
+ # MANUAL ASSIGNMENTS FOR CONSTANT PARAMETERS ACROSS CUSTOM SCENARIOS
+ FIXED_DELTA  = 0.050                      # Used in Custom_Universal and param_Hubble_fixed_delta
+ FIXED_ALPHA  = 0.170                      # Used in Custom_Universal and param_Hubble_fixed_alpha
+@@ -73,6 +82,7 @@ RANDOM_SEED = None                          # int -> reproducible chain (same re
+ if FR_Z_INIT is None:
+     FR_Z_INIT = fR.FR_REGISTRY[FR_MODEL].get("z_init_default", 40.0)
+ model_config = get_run_config(PARAMETERISATION, FR_MODEL, FR_FIXED_PARAMS, FR_OMEGA_M_ANCHOR)
++PLOTS = resolve_keys(PLOTS, scope="model")   # typo in PLOTS fails now, not after the MCMC run
+ RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subfolder
+ n_param_theta = model_config["n_param_theta"]
+ 
+@@ -252,15 +262,8 @@ if __name__ == "__main__":
+     save_histogram_data(flat_chain, model_config["labels"], model_output_dir, RUN_MODE, RUN_TAG, bins=50)
+ 
+     # ════════════════════════════════════════════════════════════════════════════
+-    # GENERATE CORNER PLOTS
+-    # ════════════════════════════════════════════════════════════════════════════
+-    plot_corner(flat_chain, model_config["labels"], RUN_TAG, model_output_dir, RUN_MODE)
+-
+-    # ════════════════════════════════════════════════════════════════════════════
+-    # GENERATE COMPONENT OR POTENTIAL TRACES
++    # GENERATE THE SELECTED GRAPHS (PLOTS switchboard above)
+     # ════════════════════════════════════════════════════════════════════════════
+-    generate_model_specific_plots(flat_chain, RUN_TAG, model_config, model_output_dir, RUN_MODE,
+-                                   FIXED_DELTA, FIXED_ALPHA)
+-
+-    print("\nOpening active interactive figure windows... Close graphics window to exit pipeline.")
+-    plt.show()
+\ No newline at end of file
++    plot_ctx = PlotContext.from_main(sys.modules[__name__], graphs_dir=base_graph_dir, show=SHOW_FIGURES)
++    if PLOTS:
++        run_plots(PLOTS, plot_ctx, {RUN_TAG: flat_chain})
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/make_plots.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/make_plots.py
+new file mode 100644
+index 0000000..d1881b2
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/make_plots.py
+@@ -0,0 +1,179 @@
++# make_plots.py
++"""
++Choose which graphs to make from MCMC chains that are already on disk (no re-sampling).
++
++    python make_plots.py                       # interactive menu
++    python make_plots.py --list                # plots + chains available for the run mode
++    python make_plots.py --plots corner violin --models LCDM wCDM
++    python make_plots.py --plots hist box violin --params H0 alpha_fR --models LCDM__power_law__alpha=-2__n=0.5 wCDM
++    python make_plots.py --plots contour_vs_ref --reference wCDM --pair H0 w0     # any model as the reference
++    python make_plots.py --plots comparison --no-show
++    python make_plots.py --plots traces --walkers 64 --run-mode snia+cc+bao+clu
++
++Plots: corner, traces, potential, omega_components (one set per model);
++       hist, box, violin, contour_vs_ref, contour_all, hubble (several models together).
++Groups: all, model, comparison.  Any mix of GR and f(R) runs can be compared, in any parameters they share
++(--params for hist/box/violin, --pair for contours, --reference for contour_vs_ref).  Plots that do not
++apply to a model (e.g. potential for an f(R) run) are skipped with a reason.
++Command-line options override the switchboard below.
++"""
++import argparse
++import os
++import sys
++
++# ════════════════════════════════════════════════════════════════════════════
++# SWITCHBOARD — used when the corresponding command-line option is not given
++# ════════════════════════════════════════════════════════════════════════════
++PLOTS_TO_MAKE = None   # e.g. ["corner", "violin"] or ["comparison"]; None -> ask in a menu
++MODELS        = None   # run tags, e.g. ["LCDM", "wCDM", "LCDM__power_law__alpha=-2__n=0.5"]; None -> all chains found
++RUN_MODE      = None   # None -> main.RUN_MODE (set by the USE_* dataset toggles)
++PARAMS        = None   # hist/box/violin: parameter names, e.g. ["H0", "w0", "alpha_fR"]; None -> ["H0", "matter"]
++PAIR          = None   # contours: [x, y] parameter names, e.g. ["H0", "alpha_fR"]; None -> ["H0", "matter"]
++REFERENCE     = None   # contour_vs_ref: reference run tag; None -> LCDM if selected, else the first model
++# ════════════════════════════════════════════════════════════════════════════
++
++import numpy as np
++
++import main as cfg_main
++from comparison_plots import DEFAULT_PAIR, DEFAULT_PARAMS, parameters_of
++from plot_selector import (PLOTS, PlotContext, available_run_modes, describe_plots,
++                           find_chains, resolve_keys, run_plots)
++
++
++def _ask(prompt):
++    try:
++        return input(prompt).strip()
++    except EOFError:
++        sys.exit("\nNo input available (not an interactive terminal); pass --plots.")
++
++
++def _pick(items, prompt):
++    """Ask for 1-based numbers / names (space or comma separated), 'a' = all; returns the chosen items."""
++    while True:
++        raw = _ask(prompt).replace(",", " ").split()
++        if not raw:
++            continue
++        if raw[0].lower() in ("a", "all"):
++            return list(items)
++        try:
++            return [items[int(r) - 1] if r.isdigit() else items[items.index(r)] for r in raw]
++        except (IndexError, ValueError):
++            print(f"  Not understood: {' '.join(raw)}  (numbers 1-{len(items)}, names, or 'a')")
++
++
++def choose_plots():
++    keys = list(PLOTS)
++    print("\nAvailable plots:")
++    for i, k in enumerate(keys, 1):
++        print(f"  {i:2d}. {k:17s} [{PLOTS[k].scope:10s}] {PLOTS[k].title}")
++    return resolve_keys(_pick(keys, "Select plots (numbers/names, 'a' = all): "))
++
++
++def choose_models(found, needs_models):
++    tags = list(found)
++    if not needs_models:
++        return tags
++    print("\nChains found:")
++    for i, t in enumerate(tags, 1):
++        print(f"  {i:2d}. {t}")
++    return _pick(tags, "Select models (numbers/names, 'a' = all): ")
++
++
++def choose_options(keys, tags, ctx_kw):
++    """Menu mode: ask for the comparison parameters / reference / pair (Enter = default)."""
++    wants = lambda *ks: any(k in keys for k in ks)
++    shared = sorted({n for t in tags for n in parameters_of(t)})
++    if not wants("hist", "box", "violin", "contour_vs_ref", "contour_all"):
++        return
++    print(f"\nParameters sampled by the selected models: {', '.join(shared)}")
++    if wants("hist", "box", "violin"):
++        raw = _ask(f"Parameters to compare in hist/box/violin [Enter = {' '.join(DEFAULT_PARAMS)}]: ").replace(",", " ").split()
++        if raw: ctx_kw["params"] = tuple(raw)
++    if wants("contour_vs_ref", "contour_all"):
++        raw = _ask(f"Contour axes: two parameters [Enter = {' '.join(DEFAULT_PAIR)}]: ").replace(",", " ").split()
++        if len(raw) == 2: ctx_kw["pair"] = tuple(raw)
++    if wants("contour_vs_ref") and len(tags) > 1:
++        raw = _ask(f"Reference model for contour_vs_ref [Enter = {'LCDM' if 'LCDM' in tags else tags[0]}]: ")
++        if raw: ctx_kw["reference"] = raw
++
++
++def main():
++    ap = argparse.ArgumentParser(description="Make a chosen subset of the pipeline's graphs from saved chains.",
++                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=describe_plots())
++    ap.add_argument("--plots", nargs="+", metavar="PLOT", help="plot keys or groups (all, model, comparison)")
++    ap.add_argument("--models", nargs="+", metavar="TAG", help="run tags to use (default: all chains found)")
++    ap.add_argument("--params", nargs="+", metavar="NAME", help="parameters for hist/box/violin (default: H0 matter)")
++    ap.add_argument("--pair", nargs=2, metavar=("X", "Y"), help="parameters on the contour axes (default: H0 matter)")
++    ap.add_argument("--reference", metavar="TAG", help="reference model for contour_vs_ref (default: LCDM if selected, else first)")
++    ap.add_argument("--run-mode", help="dataset tag in the chain file names (default: main.RUN_MODE)")
++    ap.add_argument("--walkers", type=int, help="walkers the chains were made with (default: main.N_WALKERS)")
++    ap.add_argument("--bins", type=int, help="bins for the 1D histogram overlays (default 16)")
++    ap.add_argument("--no-show", action="store_true", help="save the figures but do not open windows")
++    ap.add_argument("--list", action="store_true", help="list plots and available chains, then exit")
++    args = ap.parse_args()
++
++    overrides = {}
++    if args.walkers: overrides["n_walkers"] = args.walkers
++    if args.bins:    overrides["hist_bins"] = args.bins
++    if args.no_show: overrides["show"] = False
++    if args.params or PARAMS: overrides["params"] = tuple(args.params or PARAMS)
++    if args.pair or PAIR:     overrides["pair"] = tuple(args.pair or PAIR)
++    if args.reference or REFERENCE: overrides["reference"] = args.reference or REFERENCE
++    run_mode = args.run_mode or RUN_MODE or cfg_main.RUN_MODE
++    ctx = PlotContext.from_main(cfg_main, run_mode=run_mode, **overrides)
++
++    found = find_chains(run_mode, ctx.root)
++    if args.list:
++        print(describe_plots())
++        print(f"\nChains for run mode '{run_mode}' ({len(found)}) and the parameters each samples:")
++        for t, p in found.items():
++            try:
++                ps = " ".join(n for n in parameters_of(t))
++            except Exception as exc:
++                ps = f"?? ({exc})"
++            print(f"  {t:50s} {ps}")
++        print(f"Run modes with chains on disk: {available_run_modes(ctx.root) or 'none'}")
++        return 0
++    if not found:
++        print(f"No chain_*_{run_mode}.npy files found in {ctx.root} or its chains/ folder.\n"
++              f"Run modes with chains on disk: {available_run_modes(ctx.root) or 'none'}  (use --run-mode)")
++        return 1
++
++    requested = args.plots or PLOTS_TO_MAKE
++    if requested:
++        keys = resolve_keys(requested)
++    elif sys.stdin.isatty():
++        keys = choose_plots()
++    else:
++        print("No plots selected (not an interactive terminal). Use --plots; --list shows the options.")
++        return 2
++
++    wanted = args.models or MODELS
++    if wanted is None:
++        needs_models = sys.stdin.isatty() and not requested        # menu mode: let the user narrow the models too
++        wanted = choose_models(found, needs_models)
++    missing = [t for t in wanted if t not in found]
++    for t in missing:
++        print(f"! No chain for '{t}' with run mode '{run_mode}' -- skipped. (Found: {list(found)})")
++    chains = {}
++    for t in wanted:
++        if t in found:
++            print(f"Loading {os.path.relpath(found[t], ctx.root)}")
++            chains[t] = np.load(found[t])
++    if not chains:
++        return 1
++
++    if not requested and sys.stdin.isatty():                      # menu mode
++        kw = {}
++        choose_options(keys, list(chains), kw)
++        for k, v in kw.items():
++            setattr(ctx, k, v)
++    if ctx.reference and ctx.reference not in chains:
++        print(f"! reference '{ctx.reference}' is not among the selected models {list(chains)}; contour_vs_ref will be skipped")
++
++    results = run_plots(keys, ctx, chains)
++    return 1 if any(r[2] == "FAILED" for r in results) else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
+index 084a092..166883a 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_hubble_diagram.py
+@@ -1,140 +1,32 @@
+ # plot_hubble_diagram.py
+-import os
++"""
++Best-fit mu(z) and H(z) curves of the chosen models over the SNIa and cosmic-chronometer data
++(graphs/Model_Comparisons/).  The drawing code now lives in comparison_plots.plot_hubble; this script
++keeps the old entry point + switchboard.  To pick plots/models on the fly use make_plots.py.
++"""
+ import numpy as np
+-import matplotlib.pyplot as plt
+ 
+-import data_loader as dl
+-from likelihood import make_background_builder
+-from run_config import get_run_config, split_tag
+-from main import FIXED_DELTA, FIXED_ALPHA, RUN_MODE, FR_Z_INIT, FR_OMEGA_M_ANCHOR
++import main
++from plot_selector import PlotContext, find_chains, run_plots
+ 
+ # ════════════════════════════════════════════════════════════════════════════
+ # SWITCHBOARD CONFIGURATION — CHOOSE MODELS TO VISUALIZE
+ # ════════════════════════════════════════════════════════════════════════════
+-
+-
+-# Add the models you want to compare on the physical distance curves.
+-# Entries are run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law").
+-MODELS_TO_PLOT = ["LCDM", "wCDM", "CPL","HDE"]
+-
+-# Background parameters for custom frameworks (FIXED_DELTA, FIXED_ALPHA) are
+-# now imported directly from main.py so this script can never silently drift
+-# out of sync with whatever values main.py actually used during the MCMC run.
+-
+-# Plot formatting choices
+-COLORS = ["#2b5c8f", "#d95f02", "#7570b3", "#e7298a"]
+-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "graphs", "Model_Comparisons")
+-os.makedirs(OUTPUT_DIR, exist_ok=True)
+-
+-# ════════════════════════════════════════════════════════════════════════════
+-# INTEGRATION THEORETICAL CALCULATORS
++# Entries are run tags: "<parameterisation>" or "<parameterisation>__<fR_model>" (e.g. "LCDM__power_law__alpha=-2__n=0.5").
++MODELS_TO_PLOT = ["LCDM", "wCDM", "CPL", "HDE"]
++# FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT, FR_OMEGA_M_ANCHOR and the run mode are taken from main.py, so this
++# script cannot drift out of sync with the values main.py used for the MCMC run.
+ # ════════════════════════════════════════════════════════════════════════════
+-def get_theory_curves(model_name, median_params, z_grid):
+-    """
+-    Computes theoretical H(z) and mu(z) curves given a model's best-fit parameters.
+-    """
+-    param_name, fr_model, fr_fixed = split_tag(model_name)
+-    n_p = get_run_config(param_name, fr_model, fr_fixed, FR_OMEGA_M_ANCHOR)["n_param_theta"]
+-    H0_fit = median_params[0]
+-    theta_p = tuple(median_params[1:1 + n_p])
+-    theta_fr = tuple(median_params[1 + n_p:])
+ 
+-    # Same background builder as the likelihood (GR: parameterisation; f(R): ODE solution)
+-    bg = make_background_builder(param_name, fr_model, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+-                                 FR_OMEGA_M_ANCHOR, fr_fixed)(theta_p, theta_fr)
+-    if bg is None:
+-        raise ValueError(f"f(R) background could not be solved for {model_name} at the median parameters.")
+-    E2_func = bg.E2
+-
+-    # Calculate H(z) evolution curve
+-    H_curve = H0_fit * np.sqrt(E2_func(z_grid))
+-
+-    # Calculate Luminosity Distance Modulus mu(z) curve
+-    # Using a dense numerical integration array for exact distance calculation
+-    fine_z = np.linspace(0.0, max(z_grid) * 1.05, 500)
+-    inv_E = 1.0 / np.sqrt(E2_func(fine_z))
+-    dz = np.diff(fine_z)
+-    chi = np.concatenate([[0.0], np.cumsum(0.5 * (inv_E[:-1] + inv_E[1:]) * dz)]) * (dl.C_LIGHT / H0_fit)
+-    
+-    # Interpolate from integration grid to our plotting grid
+-    mu_curve = 5.0 * np.log10((1.0 + z_grid) * np.interp(z_grid, fine_z, chi)) + 25.0
+-    # Fix the standard boundary value log issue at exactly z=0
+-    mu_curve[z_grid == 0.0] = 0.0 
+-    
+-    return H_curve, mu_curve
+-
+-# ════════════════════════════════════════════════════════════════════════════
+-# EXECUTION & PLOTTING PIPELINE
+-# ════════════════════════════════════════════════════════════════════════════
+ if __name__ == "__main__":
+-    print("--- Loading Observational Dataset Profiles ---")
+-    # Load raw Supernovae points
+-    z_sn, mu_sn, _, _, _, _ = dl.load_pantheon_data()
+-    # Load Cosmic Chronometers points
+-    z_cc, H_cc, err_cc = dl.load_cc_data()
+-    
+-    # Setup plotting mesh
+-    z_plot_grid = np.linspace(0.01, 2.3, 200)
+-    
+-    # Initialize the composite multi-panel plot layout
+-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 10), sharex=True)
+-    
+-    # 1. Draw Observational Data Points onto the layouts
+-    print("Plotting real experimental observations...")
+-    # Scatter plot for Pantheon Supernovae (using thin alpha to cleanly manage data density)
+-    ax1.scatter(z_sn, mu_sn, color="gray", s=4, alpha=0.25, label="Pantheon+ SNIa Dataset", zorder=1)
+-    # Error bars for Cosmic Chronometers
+-    ax2.errorbar(z_cc, H_cc, yerr=err_cc, fmt="o", color="black", ecolor="dimgray", 
+-                 elinewidth=1.5, capsize=3, ms=5, label="Cosmic Chronometers (CC)", zorder=2)
+-    
+-    # 2. Extract chains and project best-fit model lines
+-    print("\nExtracting MCMC best-fit states and mapping curves...")
+-    for idx, model_name in enumerate(MODELS_TO_PLOT):
+-        npy_file = os.path.join(SCRIPT_DIR, f"chain_{model_name}_{RUN_MODE}.npy")
+-        
+-        if not os.path.exists(npy_file):
+-            print(f"❌ Warning: Chain file '{npy_file}' not found. Skipping model {model_name}.")
++    ctx = PlotContext.from_main(main)
++    found = find_chains(ctx.run_mode, ctx.root)
++    chains = {}
++    for tag in MODELS_TO_PLOT:
++        if tag not in found:
++            print(f"❌ Warning: no chain file for '{tag}' (run mode {ctx.run_mode}). Skipping.  Found: {list(found)}")
+             continue
+-            
+-        chain = np.load(npy_file)
+-        # Compute the median (best-fit) parameter array from the distribution
+-        median_parameters = np.median(chain, axis=0)
+-        
+-        # Calculate theoretical data values along our plotting grid
+-        H_theory, mu_theory_vals = get_theory_curves(model_name, median_parameters, z_plot_grid)
+-        
+-        color = COLORS[idx % len(COLORS)]
+-        # Add smooth curves to both panel plots
+-        ax1.plot(z_plot_grid, mu_theory_vals, color=color, lw=2.5, label=f"Best-fit {model_name}", zorder=3)
+-        ax2.plot(z_plot_grid, H_theory, color=color, lw=2.5, label=f"Best-fit {model_name}", zorder=3)
+-        
+-        print(f"   -> Plotted best-fit parameters line for model: {model_name}")
+-        
+-    # ════════════════════════════════════════════════════════════════════════════
+-    # AESTHETICS & LAYOUT POLISHING
+-    # ════════════════════════════════════════════════════════════════════════════
+-    # Top Panel Configuration (Distance Modulus)
+-    ax1.set_ylabel(r"Distance Modulus $\mu(z)$", fontsize=13)
+-    ax1.set_title("Cosmological Distance Curves & Expansion History Profiles", fontsize=14, pad=15)
+-    ax1.grid(True, linestyle="--", alpha=0.4)
+-    ax1.legend(loc="lower right", fontsize=11, framealpha=0.9)
+-    ax1.set_ylim(32, 47)
+-    
+-    # Bottom Panel Configuration (Hubble Parameter)
+-    ax2.set_xlabel(r"Redshift ($z$)", fontsize=13)
+-    ax2.set_ylabel(r"Hubble Parameter $H(z)$ $\rm [km/s/Mpc]$", fontsize=13)
+-    ax2.grid(True, linestyle="--", alpha=0.4)
+-    ax2.legend(loc="upper left", fontsize=11, framealpha=0.9)
+-    ax2.set_xlim(0, 2.3)
+-    ax2.set_ylim(50, 250)
+-    
+-    # Prevent layout label overlapping
+-    plt.tight_layout()
+-    
+-    # Save compilation layout vector file
+-    save_path = os.path.join(OUTPUT_DIR, f"hubble_diagram_comparison_{RUN_MODE}.pdf")
+-    plt.savefig(save_path, bbox_inches="tight")
+-    print(f"\n✅ Complete comparison diagram saved to: {save_path}")
+-    
+-    plt.show()
+\ No newline at end of file
++        chains[tag] = np.load(found[tag])
++    if not chains:
++        raise SystemExit("❌ No chains found for MODELS_TO_PLOT.")
++    run_plots(["hubble"], ctx, chains)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_selector.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_selector.py
+new file mode 100644
+index 0000000..b12eb9e
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_selector.py
+@@ -0,0 +1,253 @@
++# plot_selector.py
++"""
++Registry of every graph the pipeline can make, and the dispatcher that runs a chosen subset.
++
++Two kinds of plot (scope):
++    "model"       one figure set per run tag, from that run's own chain  -> graphs/<tag>/
++    "comparison"  one figure over several run tags                       -> graphs/Model_Comparisons/
++
++Used by
++    main.py        PLOTS = [...] in the switchboard (model-scope plots, made right after sampling)
++    make_plots.py  command line / interactive menu, from chains already on disk
++    compare_posteriors.py, plot_hubble_diagram.py, plot_walk_traces.py  (thin wrappers, old entry points)
++
++This module must NOT import main.py (main imports this); settings travel in a PlotContext.
++"""
++import os
++import re
++import traceback
++from dataclasses import dataclass
++from typing import Callable, Optional
++
++import matplotlib.pyplot as plt
++
++import plotting
++import comparison_plots as cp
++from comparison_plots import PlotSkipped
++from run_config import get_run_config, split_tag
++
++SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
++CUSTOM_HUBBLE_MODELS = ("Custom_Universal", "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha")
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# CONTEXT
++# ════════════════════════════════════════════════════════════════════════════
++@dataclass
++class PlotContext:
++    run_mode: str                       # e.g. "snia+cc+bao+clu"; part of every chain / figure file name
++    fixed_delta: float = 0.050          # main.FIXED_DELTA / FIXED_ALPHA (custom Hubble models)
++    fixed_alpha: float = 0.170
++    fr_model: str = "GR"                # main.FR_MODEL / FR_Z_INIT / FR_OMEGA_M_ANCHOR: the chain files do not
++    fr_z_init: float = 40.0             # record these, so hubble-diagram backgrounds for f(R) chains assume them
++    fr_omega_m_anchor: float = 0.3
++    n_walkers: int = 64                 # needed to un-flatten chains for the trace plot (not stored in the .npy)
++    hist_bins: int = 16                 # 1D histogram overlays: fewer bins = smoother
++    params: tuple = cp.DEFAULT_PARAMS   # comparison plots (hist, box, violin): parameters to compare, by name
++    pair: tuple = cp.DEFAULT_PAIR       # contour plots: (x, y) parameter names
++    reference: Optional[str] = None     # contour_vs_ref: reference run tag (None -> LCDM if selected, else first model)
++    root: str = SCRIPT_DIR              # where chain_*.npy live (also searched: <root>/chains/)
++    graphs_dir: Optional[str] = None    # default <root>/graphs
++    show: bool = True                   # open the figure windows at the end
++
++    @classmethod
++    def from_main(cls, m, **overrides):
++        """Build a context from the switchboard constants of the main module."""
++        kw = dict(run_mode=m.RUN_MODE, fixed_delta=m.FIXED_DELTA, fixed_alpha=m.FIXED_ALPHA,
++                  fr_model=m.FR_MODEL, fr_z_init=m.FR_Z_INIT, fr_omega_m_anchor=m.FR_OMEGA_M_ANCHOR,
++                  n_walkers=m.N_WALKERS)
++        kw.update(overrides)
++        return cls(**kw)
++
++    def _graphs(self):
++        return self.graphs_dir or os.path.join(self.root, "graphs")
++
++    def model_dir(self, tag):
++        path = os.path.join(self._graphs(), tag)
++        os.makedirs(path, exist_ok=True)
++        return path
++
++    def comparison_dir(self):
++        path = os.path.join(self._graphs(), "Model_Comparisons")
++        os.makedirs(path, exist_ok=True)
++        return path
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# REGISTRY
++# ════════════════════════════════════════════════════════════════════════════
++@dataclass(frozen=True)
++class PlotSpec:
++    key: str
++    scope: str                          # "model" | "comparison"
++    title: str
++    func: Callable
++    applies: Optional[Callable] = None  # model scope: (tag, cfg) -> None if OK, else reason string
++
++
++def _needs_potential(tag, cfg):
++    if cfg["potential_func"] is None:
++        return "no potential reconstruction for this model (none defined, or an f(R) run)"
++
++
++def _needs_custom_hubble(tag, cfg):
++    if cfg["parameterisation"] not in CUSTOM_HUBBLE_MODELS or cfg["fR_model"] != "GR":
++        return f"only defined for {', '.join(CUSTOM_HUBBLE_MODELS)}"
++
++
++PLOTS = {s.key: s for s in [
++    PlotSpec("corner", "model", "Corner plot of all sampled parameters",
++             lambda ctx, tag, chain, cfg: plotting.plot_corner(chain, cfg["labels"], tag, ctx.model_dir(tag), ctx.run_mode)),
++    PlotSpec("traces", "model", "Walker traces (convergence diagnostic)",
++             lambda ctx, tag, chain, cfg: plotting.plot_traces(chain, cfg["labels"], tag, ctx.model_dir(tag),
++                                                               ctx.run_mode, ctx.n_walkers)),
++    PlotSpec("potential", "model", "Dark-energy potential V(phi) reconstruction",
++             lambda ctx, tag, chain, cfg: plotting.plot_dark_energy_potential(chain, tag, cfg["potential_func"],
++                                                                              ctx.model_dir(tag), ctx.run_mode),
++             applies=_needs_potential),
++    PlotSpec("omega_components", "model", "Omega_1(z), Omega_2(z) evolution (custom Hubble models)",
++             lambda ctx, tag, chain, cfg: plotting.plot_and_save_omega_components(chain, tag, ctx.model_dir(tag), ctx.run_mode,
++                                                                                  ctx.fixed_delta, ctx.fixed_alpha),
++             applies=_needs_custom_hubble),
++    PlotSpec("hist", "comparison", "1D posterior overlay, one figure per chosen parameter (params)", cp.plot_hist),
++    PlotSpec("box", "comparison", "Median +- 1 sigma box plot, one panel per chosen parameter (params)", cp.plot_box),
++    PlotSpec("violin", "comparison", "Violin plot, one panel per chosen parameter (params)", cp.plot_violin),
++    PlotSpec("contour_vs_ref", "comparison", "2D contours of each model vs a reference model (pair, reference)", cp.plot_contour_vs_ref),
++    PlotSpec("contour_all", "comparison", "2D contours of all models together (pair)", cp.plot_contour_all),
++    PlotSpec("hubble", "comparison", "Hubble diagram: best-fit mu(z), H(z) vs SNIa + CC data", cp.plot_hubble),
++]}
++ALIASES = {"contour_vs_lcdm": "contour_vs_ref", "h0_hist": "hist", "matter_hist": "hist"}   # names from the first version
++GROUPS = {"all": list(PLOTS),
++          "model": [k for k, s in PLOTS.items() if s.scope == "model"],
++          "comparison": [k for k, s in PLOTS.items() if s.scope == "comparison"]}
++
++
++def resolve_keys(requested, scope=None):
++    """
++    Expand group names ('all', 'model', 'comparison'), drop duplicates, validate.
++    scope='model' additionally rejects comparison plots (used by main.py, which has a single chain).
++    """
++    keys = []
++    for k in requested:
++        for kk in GROUPS.get(ALIASES.get(k, k), [ALIASES.get(k, k)]):
++            if kk not in PLOTS:
++                raise ValueError(f"Unknown plot '{kk}'. Plots: {list(PLOTS)}; groups: {list(GROUPS)}")
++            if scope and PLOTS[kk].scope != scope:
++                raise ValueError(f"Plot '{kk}' is a {PLOTS[kk].scope}-scope plot and cannot be used here "
++                                 f"(allowed: {GROUPS[scope]}). Comparison plots need several chains: use make_plots.py.")
++            if kk not in keys:
++                keys.append(kk)
++    return keys
++
++
++def describe_plots():
++    lines = []
++    for scope, head in (("model", "Per-model plots (graphs/<tag>/)"), ("comparison", "Comparison plots (graphs/Model_Comparisons/)")):
++        lines.append(head)
++        lines += [f"  {k:17s} {PLOTS[k].title}" for k in GROUPS[scope]]
++    lines += ["", "Parameters are chosen by name: H0, Omega_m, Omega_0, w0, wa, alpha_fR, n_fR, Lambda_fR, ... and",
++              "'matter' (= Omega_m or Omega_0).  Models lacking a chosen parameter are left out of that panel/figure.",
++              "Any mix of GR and f(R) runs can be compared; f(R) runs have no Omega_m (anchored), so compare them",
++              "in e.g. H0 / alpha_fR / Lambda_fR.  --list shows what each chain samples."]
++    return "\n".join(lines)
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# CHAIN DISCOVERY
++# ════════════════════════════════════════════════════════════════════════════
++def find_chains(run_mode, root=SCRIPT_DIR):
++    """{run_tag: path} for every chain_<tag>_<run_mode>.npy in <root> and <root>/chains (newest file wins)."""
++    suffix, found = f"_{run_mode}.npy", {}
++    for folder in (root, os.path.join(root, "chains")):
++        if not os.path.isdir(folder):
++            continue
++        for name in sorted(os.listdir(folder)):
++            if name.startswith("chain_") and name.endswith(suffix):
++                path, tag = os.path.join(folder, name), name[len("chain_"):-len(suffix)]
++                if tag not in found or os.path.getmtime(path) > os.path.getmtime(found[tag]):
++                    found[tag] = path
++    return dict(sorted(found.items()))
++
++
++def available_run_modes(root=SCRIPT_DIR):
++    modes = set()
++    for folder in (root, os.path.join(root, "chains")):
++        if os.path.isdir(folder):
++            modes |= {re.sub(r"\.npy$", "", n).rsplit("_", 1)[1] for n in os.listdir(folder)
++                      if n.startswith("chain_") and n.endswith(".npy") and "_" in n[6:]}
++    return sorted(modes)
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# DISPATCHER
++# ════════════════════════════════════════════════════════════════════════════
++def run_plots(requested, ctx, chains):
++    """
++    Make the requested plots.
++        requested : plot keys / group names
++        chains    : {run_tag: flat chain array}, in the order the models should appear in comparisons
++    A plot that does not apply (or a model with a broken chain) is skipped with a reason; an exception
++    inside one plot is reported and does not stop the others.  Returns [(plot, target, status, detail)],
++    status in {"ok", "skipped", "FAILED"}.  Opens the figure windows at the end if ctx.show.
++    """
++    keys = resolve_keys(requested)
++    results = []
++
++    def attempt(key, target, call):
++        try:
++            call()
++            results.append((key, target, "ok", ""))
++        except PlotSkipped as exc:
++            results.append((key, target, "skipped", str(exc)))
++        except Exception as exc:                       # keep going: report at the end
++            traceback.print_exc()
++            results.append((key, target, "FAILED", f"{type(exc).__name__}: {exc}"))
++        if not ctx.show:
++            plt.close("all")
++
++    cfgs, good = {}, {}
++    for tag, chain in chains.items():
++        try:
++            cfgs[tag] = get_run_config(*split_tag(tag), ctx.fr_omega_m_anchor)
++            if chain.ndim != 2 or chain.shape[1] != len(cfgs[tag]["labels"]):
++                raise ValueError(f"chain shape {chain.shape} does not match the {len(cfgs[tag]['labels'])} "
++                                 f"parameters {cfgs[tag]['labels']}")
++            good[tag] = chain
++        except Exception as exc:
++            for k in keys:
++                results.append((k, tag, "skipped" if PLOTS[k].scope == "model" else "n/a", f"bad chain/tag: {exc}"))
++            print(f"! '{tag}' dropped: {exc}")
++
++    for k in (k for k in keys if PLOTS[k].scope == "model"):
++        for tag, chain in good.items():
++            reason = PLOTS[k].applies(tag, cfgs[tag]) if PLOTS[k].applies else None
++            if reason:
++                results.append((k, tag, "skipped", reason))
++                continue
++            print(f"\n[{k}] {tag}")
++            attempt(k, tag, lambda k=k, tag=tag, chain=chain: PLOTS[k].func(ctx, tag, chain, cfgs[tag]))
++
++    comparison_keys = [k for k in keys if PLOTS[k].scope == "comparison"]
++    if comparison_keys:
++        data = {}
++        for tag, chain in good.items():
++            data[tag] = cp.extract_summary(tag, chain)
++        for k in comparison_keys:
++            if not data:
++                results.append((k, "-", "skipped", "no usable chains"))
++                continue
++            print(f"\n[{k}] {', '.join(data)}")
++            attempt(k, f"{len(data)} models", lambda k=k: PLOTS[k].func(ctx, data))
++
++    print("\n── Plot summary " + "─" * 60)
++    grouped = {}                                   # one line per (plot, status, reason), listing its targets
++    for key, target, status, detail in results:
++        grouped.setdefault((key, status, detail), []).append(target)
++    for (key, status, detail), targets in grouped.items():
++        print(f"  {status:8s} {key:17s} " + ("; ".join(targets) if status == "ok" else f"{len(targets)}x: {detail}"))
++        if status != "ok" and len(targets) <= 3:
++            print(f"{'':27s}{'; '.join(targets)}")
++    if ctx.show and any(r[2] == "ok" for r in results):
++        print("\nOpening interactive figure windows... close them to exit.")
++        plt.show()
++    return results
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
+index 2808bd0..aa005d2 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plot_walk_traces.py
+@@ -1,36 +1,19 @@
+ # plot_walk_traces.py
+-import os
++"""
++Walker trace plots of one saved chain (graphs/<tag>/).  The drawing code now lives in plotting.plot_traces;
++this script keeps the old entry point + switchboard.  To pick plots/models on the fly use make_plots.py.
++"""
+ import numpy as np
+-import matplotlib.pyplot as plt
+-from run_config import get_run_config, split_tag
++
++import main
++from plot_selector import PlotContext, find_chains, run_plots
+ 
+ CHOSEN_MODEL = "LCDM"   # run tag: "<parameterisation>" or "<parameterisation>__<fR_model>"
+-RUN_MODE = "joint"
+-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
++# Run mode (datasets) and the walker count (needed to un-flatten the chain) come from main.py.
+ 
+-npy_file = os.path.join(SCRIPT_DIR, f"chain_{CHOSEN_MODEL}_{RUN_MODE}.npy")
+-if os.path.exists(npy_file):
+-    chain = np.load(npy_file)
+-    labels = get_run_config(*split_tag(CHOSEN_MODEL))["labels"]
+-    ndim = len(labels)
+-    
+-    # Reconstruct separate walker paths
+-    n_walkers = 64
+-    n_steps = len(chain) // n_walkers
+-    reshaped = chain.reshape(n_steps, n_walkers, ndim)
+-    
+-    fig, axes = plt.subplots(ndim, 1, figsize=(9, 2 * ndim), sharex=True)
+-    if ndim == 1: axes = [axes]
+-    
+-    for i in range(ndim):
+-        axes[i].plot(reshaped[:, :, i], color="black", alpha=0.15)
+-        axes[i].set_ylabel(labels[i], fontsize=12)
+-        axes[i].grid(True, alpha=0.3)
+-        
+-    axes[-1].set_xlabel("MCMC Step Index", fontsize=12)
+-    plt.suptitle(f"Walker Diagnostics: {CHOSEN_MODEL}", y=0.98)
+-    
+-    out_path = os.path.join(SCRIPT_DIR, "graphs", CHOSEN_MODEL, f"traces_{CHOSEN_MODEL}.pdf")
+-    plt.savefig(out_path, bbox_inches="tight", dpi=200)
+-    print(f"Diagnostics traces generated at: {out_path}")
+-    plt.show()
+\ No newline at end of file
++if __name__ == "__main__":
++    ctx = PlotContext.from_main(main)
++    found = find_chains(ctx.run_mode, ctx.root)
++    if CHOSEN_MODEL not in found:
++        raise SystemExit(f"No chain for '{CHOSEN_MODEL}' with run mode '{ctx.run_mode}'. Found: {list(found)}")
++    run_plots(["traces"], ctx, {CHOSEN_MODEL: np.load(found[CHOSEN_MODEL])})
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
+index fe5b1d1..3548bfb 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/plotting.py
+@@ -129,4 +129,32 @@ def generate_model_specific_plots(flat_chain, chosen_model_name, model_config, o
+                                         fixed_delta, fixed_alpha)
+     else:
+         plot_dark_energy_potential(flat_chain, chosen_model_name, model_config["potential_func"],
+-                                    output_dir, run_mode)
+\ No newline at end of file
++                                    output_dir, run_mode)
++
++def plot_traces(flat_chain, labels, model_name, output_dir, run_mode, n_walkers):
++    """
++    Walker trace plot (one panel per parameter).  emcee's flat chain is step-major
++    (index = step * n_walkers + walker), so it is reshaped back to (steps, walkers, ndim).
++
++    n_walkers is NOT stored in the .npy file.  If it is wrong but still divides the chain
++    length, the traces are silently scrambled (walkers interleaved) -- pass the value the
++    chain was actually produced with.
++    """
++    n_samples, ndim = flat_chain.shape
++    if n_samples % n_walkers:
++        raise ValueError(f"chain has {n_samples} samples, not divisible by n_walkers={n_walkers}")
++    reshaped = flat_chain.reshape(n_samples // n_walkers, n_walkers, ndim)
++
++    fig, axes = plt.subplots(ndim, 1, figsize=(9, 2 * ndim), sharex=True, squeeze=False)
++    for i in range(ndim):
++        ax = axes[i, 0]
++        ax.plot(reshaped[:, :, i], color="black", alpha=0.15)
++        ax.set_ylabel(labels[i], fontsize=12)
++        ax.grid(True, alpha=0.3)
++    axes[-1, 0].set_xlabel("MCMC Step Index", fontsize=12)
++    fig.suptitle(f"Walker Diagnostics: {model_name}", y=0.98)
++
++    out_path = os.path.join(output_dir, f"traces_{model_name}_{run_mode}.pdf")
++    fig.savefig(out_path, bbox_inches="tight", dpi=200)
++    print(f"Walker traces saved to: {out_path}")
++    return fig
