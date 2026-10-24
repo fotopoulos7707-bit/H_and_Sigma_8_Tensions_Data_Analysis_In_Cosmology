@@ -13,7 +13,7 @@ from plot_selector import PlotContext, find_chains, run_plots
 # ════════════════════════════════════════════════════════════════════════════
 # Entries are run tags: "<parameterisation>" for FR_MODEL="GR", or "<parameterisation>__<fR_model>[__param=value...]"
 # (e.g. "LCDM__power_law__alpha=-2__n=0.5").  The run mode (datasets) is main.RUN_MODE.
-MODELS_TO_COMPARE = ["LCDM", "wCDM"]
+MODELS_TO_COMPARE = ["LCDM", "LCDM__power_law__alpha=-0.01__n=0.5"]
 
 # Any of: "hist", "box", "violin", "contour_vs_ref", "contour_all", "hubble"  (or "comparison" for all of them).
 PLOTS = ["hist", "box", "contour_vs_ref", "contour_all"]
