@@ -21,17 +21,19 @@ from results_io import save_histogram_data, write_posterior_summary
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
 # ════════════════════════════════════════════════════════════════════════════
-PARAMETERISATION = "wCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "R_lambda_R2"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "hu_sawicki"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
+                         #   "hu_sawicki" f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)), p = 1  -> ODE started on its own attractor
+                         #                (only Omega_m is taken from the parameterisation; LCDM is the natural companion)
                          # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
-FR_FIXED_PARAMS  = {"alpha": 1e-9}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
-                         # Names: power_law -> "alpha", "n";  R_log_R -> "alpha".  {} = sample all of them.
+FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
+                         # Names: power_law -> "alpha", "n";  R_log_R -> "alpha";  hu_sawicki -> "Lambda", "b".  {} = sample all of them.
                          # For power_law, f_RR > 0 needs alpha<0 if 0<n<1 and alpha>0 if n>1 (n=1 is just GR): this is enforced.
-FR_Z_INIT        = None  # None -> model default (40 for the ODE models; 2.5 for R_lambda_R2).  ODE models: redshift where the
+FR_Z_INIT        = None  # None -> model default (40 for the ODE models; 10 for hu_sawicki; 2.5 for R_lambda_R2).  ODE models: redshift where the
                          # parameterisation sets the initial conditions (> max data z ~2.4; larger = more converged but slower;
                          # a convergence test is printed for f(R) runs).  R_lambda_R2: highest redshift where the perturbative
                          # solution is trusted (must exceed ~2.4).

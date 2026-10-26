@@ -99,12 +99,19 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
                          f"Omega_m and cannot be combined with f(R) model '{fr_model}'.")
 
     analytic = fcfg.get("analytic_background")
+    ic_func = fcfg.get("ic_func")                # model-specific attractor ICs (replace the parameterisation's)
+    ode_options = fcfg.get("ode_options", {})    # e.g. method / rtol / max_rhs_evals for very stiff models
 
     def build(theta_p, theta_fr, return_reason=False):
         theta = expand(theta_p)
         if analytic is not None:                 # perturbative attractor instead of the ODE
             out = analytic(omega_m_func(theta), expand_fr(theta_fr), fr_z_init)
             return out if return_reason else out[0]
+        if ic_func is not None:                  # ODE started on the model's own attractor
+            theta_f = expand_fr(theta_fr)
+            return fR.solve_background(None, omega_m_func(theta), derivs_of(theta_f), fr_z_init,
+                                       return_reason=return_reason,
+                                       ics=ic_func(omega_m_func(theta), theta_f, fr_z_init), **ode_options)
         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
                                    derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
     return build

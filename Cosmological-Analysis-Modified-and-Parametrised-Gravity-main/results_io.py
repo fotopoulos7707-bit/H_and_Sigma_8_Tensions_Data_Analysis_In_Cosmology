@@ -16,7 +16,7 @@ def save_histogram_data(flat_chain, labels, output_dir, run_mode, chosen_model, 
     clean_names = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0",
                    r"$w_0$": "w0", r"$w_a$": "wa", r"$\alpha$": "alpha", r"$\delta$": "delta",
                    r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR",
-                   r"$\Lambda_{f(R)}$": "Lambda_fR"}
+                   r"$\Lambda_{f(R)}$": "Lambda_fR", r"$b_{f(R)}$": "b_fR"}
 
     for i, lbl in enumerate(labels):
         col_data = flat_chain[:, i]

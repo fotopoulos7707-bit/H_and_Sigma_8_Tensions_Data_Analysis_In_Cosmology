@@ -64,7 +64,8 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
         if not np.isfinite(fcfg["prior_func"](full)):
             rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
                     "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)",
-                    "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds"}[fr_model]
+                    "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds",
+                    "hu_sawicki": "f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 needs Lambda > 0 and b > 0, and a de Sitter attractor needs b < 2 (both inside the prior bounds)"}[fr_model]
             raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
                              f"Bounds: {fR.FR_PRIOR_BOUNDS}")
 

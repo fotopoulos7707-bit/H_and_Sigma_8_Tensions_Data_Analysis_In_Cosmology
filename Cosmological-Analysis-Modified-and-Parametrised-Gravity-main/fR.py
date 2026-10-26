@@ -12,6 +12,9 @@ out symbolically in Modified_Gravity_Models/fR_friedmann.py:
     "R_lambda_R2" f = R - 2 Lambda + alpha R^2   free: Lambda, alpha  (not in fR_friedmann.py)
                  Solved NOT by the ODE but on the smooth (scalaron-free) attractor, in closed form
                  to second order in alpha -- see "R_lambda_R2" below.
+    "hu_sawicki" f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)),  p = 1   free: Lambda, b
+                 = R - 2 Lambda R/(R + Lambda b)   (Hu-Sawicki, n = 1).  ODE started on the model's own
+                 high-curvature attractor and integrated with an implicit (Radau) method -- see "hu_sawicki" below.
 
 HOW THE f(R) MODEL ENTERS THE LIKELIHOOD
 ----------------------------------------
@@ -79,6 +82,30 @@ LIMITATIONS
   (BAO, z = 2.36) is only ~0.6%, below the data errors: alpha is UNCONSTRAINED by background data
   (its posterior is the prior cut at ~9e-5), and the model is degenerate with LCDM (Lambda plays
   the role of Omega_m).
+* "hu_sawicki" (f = R - 2 Lambda R/(R + c),  c = Lambda b;  the p = 1 case of
+  f = R - 2 Lambda [1 - 1/(1 + (R/(Lambda b))^p)]).  Derivatives (verified symbolically):
+        f_R   = 1 - 2 Lambda c/(R + c)^2,   f_RR = 4 Lambda c/(R + c)^3,   f_RRR = -12 Lambda c/(R + c)^4
+  Limits: R >> c gives f -> R - 2 Lambda (LCDM with Omega_Lambda = Lambda/3 in anchor units), so there IS a
+  GR-like matter era; b -> 0 is exactly LCDM.  f_RR > 0 for R > 0 needs Lambda b > 0.  A de Sitter attractor
+  (R f_R = 2 f) exists only for b < 2, at R_dS = Lambda (2 - b + sqrt(4 - 2b)) (-> 4 Lambda as b -> 0), so the
+  prior is 0 < b < 2.  Mapping to the usual Hu-Sawicki (n = 1) parameters (m^2, c1, c2):
+  2 Lambda = m^2 c1/c2,  Lambda b = m^2/c2.  Viable (solar-system / small |f_R0|) models have b << 1.
+  STIFFNESS (the essential problem).  f_RR ~ R^-3 is tiny at early times, so the scalaron mode is oscillatory and
+  extremely stiff (omega/H ~ R^(3/2)/sqrt(Lambda c) ~ 1e2-1e3 at z ~ 10).  The default LSODA stays in its explicit
+  mode and needs ~1e3-1e6 right-hand-side evaluations (growing like (1 + z_init)^4.5 and as b -> 0), so the generic
+  5000-evaluation cap rejects most of the parameter space (measured: 11 of 15 tested (b, z_init) combinations failed).
+  BDF is even slower; Radau (L-stable, follows the attractor) needs ~2-5e3 evaluations (~50 ms), nearly independent of
+  z_init, and agrees with the oscillation-resolving LSODA solution to <~4e-8.  Radau is therefore registered via
+  "ode_options".
+  INITIAL CONDITIONS (a refinement).  The ODE is started on the model's own high-curvature attractor
+  u = x + Lambda/3 + delta1, x = Omega_m e^{-3N}, with delta1 (first order in g = 2 Lambda c/(R + c)) derived in
+  _ics_hu_sawicki, instead of the parameterisation's E^2.  The latter has Omega_Lambda = 1 - Omega_m, which equals
+  Lambda/3 only at Lambda = 3(1 - Omega_m) (=2.1 for the anchor 0.3), and the mismatch is divided by the tiny f_RR.
+  Measured effect (Radau, b = 0.1, z_init = 10): the parameterisation's ICs change E^2 by 2e-5..1e-4 for
+  Lambda = 1.5..3.5 (decaying with z_init, and one failed solve at Lambda = 1.5, z_init = 40); the attractor ICs make
+  E^2(z) independent of z_init to <~1e-7 everywhere tested (z_init = 10..80).  Both are far below the data errors,
+  so this is about robustness and removing the dependence on the parameterisation's dark-energy parameters.
+  Like R_lambda_R2, only Omega_m is taken from the parameterisation; its other parameters (w0, ...) are unused.
 * Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
   a valid starting point if the f(R) model has a GR-like matter era at early times.
     - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
@@ -101,6 +128,8 @@ FR_PRIOR_BOUNDS = {
     "alpha_log"  : (  0.0,  3.0),
     "Lambda"     : (  0.0, 20.0),     # R_lambda_R2: cosmological constant in anchor-H0^2 units (LCDM-like value ~ 3(1-Omega_m) = 2.1)
     "alpha_R2"   : (  0.0,  1e-4),    # R_lambda_R2: R^2 coefficient (anchor-H0^-2 units); PERTURBATIVE_TOL cuts in at ~9e-5
+    "b_HS"       : (  0.0,  2.0),     # hu_sawicki: b = c/Lambda (dimensionless); b > 0 for f_RR > 0, b < 2 for a de Sitter attractor
+                                      #   (Lambda for hu_sawicki reuses the "Lambda" bound above)
 }
 
 def _in(val, key):
@@ -150,6 +179,45 @@ def _prior_R_lambda_R2(theta):
     Lam, alpha = theta
     # f_RR = 2 alpha > 0 (stability)
     return 0.0 if (_in(Lam, "Lambda") and _in(alpha, "alpha_R2") and alpha > 0.0) else -np.inf
+
+
+def _derivs_hu_sawicki(theta):
+    Lam, b = theta
+    c = Lam * b
+    return (lambda R: R - 2.0 * Lam * R / (R + c),
+            lambda R: 1.0 - 2.0 * Lam * c / (R + c) ** 2,
+            lambda R: 4.0 * Lam * c / (R + c) ** 3,
+            lambda R: -12.0 * Lam * c / (R + c) ** 4)
+
+def _prior_hu_sawicki(theta):
+    Lam, b = theta
+    # f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 (stability) <=> Lambda > 0 and b > 0;  b < 2: a de Sitter attractor exists
+    return 0.0 if (_in(Lam, "Lambda") and _in(b, "b_HS") and Lam > 0.0 and 0.0 < b < 2.0) else -np.inf
+
+def _ics_hu_sawicki(Omega_m, theta, z_init):
+    """
+    (u, u') = (H^2/H0^2, du/dN) at z_init on the model's own high-curvature attractor, anchor units.
+
+    Write f = R - 2 Lambda + g(R) with g = 2 Lambda c/(R + c)  (c = Lambda b), small for R >> c.  With
+    x = Omega_m e^{-3N} (x' = -3x):
+        zeroth order:  u0 = x + Lambda/3,  R0 = 3 u0' + 12 u0 = 3x + 4 Lambda,  R0' = -9x   (LCDM; tt equation exact for g = 0)
+        first order :  put u = u0 + delta in  kappa rho = 3 F u + (f - R F)/2 + 3 u f_RR R'  = 3x.  Since g is first order,
+                       delta enters only through the term 3 delta, so   delta1 = -(tt residual of u0)/3  with
+                       tt residual = 3 (1 + g_R) u0 + (R0 - 2 Lambda + g - R0 (1 + g_R))/2 + 3 u0 g_RR R0' - 3x,  g, g_R, g_RR at R0.
+    Simplified with sympy (check_fR.py re-derives it and confirms the residual of u0 + delta1 is O(g^2)):
+        delta1  = Lambda^2 b (-Lambda^2 b^2 - 10 Lambda^2 b - 24 Lambda^2 - 3 Lambda b x + 18 Lambda x + 108 x^2) / (3 D^3)
+        delta1' = 6 Lambda^2 b x (-Lambda^2 b^2 - 16 Lambda^2 b - 48 Lambda^2 - 39 Lambda b x - 126 Lambda x + 54 x^2) / D^4
+        D = Lambda b + 4 Lambda + 3 x
+    delta1 ~ 4 Lambda^2 b/(3x) at early times, i.e. ~4e-6 relative at z = 10 for Lambda = 2.1, b = 0.1.
+    """
+    Lam, b = theta
+    x = Omega_m * (1.0 + z_init) ** 3
+    D = Lam * b + 4.0 * Lam + 3.0 * x
+    d1 = Lam**2 * b * (-Lam**2 * b**2 - 10.0 * Lam**2 * b - 24.0 * Lam**2 - 3.0 * Lam * b * x
+                       + 18.0 * Lam * x + 108.0 * x**2) / (3.0 * D**3)
+    d1_N = 6.0 * Lam**2 * b * x * (-Lam**2 * b**2 - 16.0 * Lam**2 * b - 48.0 * Lam**2 - 39.0 * Lam * b * x
+                                   - 126.0 * Lam * x + 54.0 * x**2) / D**4
+    return x + Lam / 3.0 + d1, -3.0 * x + d1_N
 
 
 PERTURBATIVE_TOL = 1e-3    # max tolerated estimated truncation error of E^2 for perturbative backgrounds
@@ -203,6 +271,9 @@ def _background_R_lambda_R2(Omega_m, theta, z_max):
 #   derivs     : theta_fR -> (f, f_R, f_RR, f_RRR);  None for GR
 #   analytic_background (optional): (Omega_m, theta_fR, z_max) -> (Background|None, reason); replaces the ODE
 #   z_init_default (optional): default FR_Z_INIT for this model (40 if absent)
+#   ic_func (optional): (Omega_m, theta_fR, z_init) -> (u_i, u'_i); the ODE is started on the model's own attractor
+#                       INSTEAD of the parameterisation's E^2 (removes an IC mismatch of ~1e-4; see "hu_sawicki" in the docstring)
+#   ode_options (optional): extra solve_background keywords (method, rtol, max_rhs_evals) for models whose ODE is very stiff
 FR_REGISTRY = {
     "GR": {
         "description": "f(R) = R: General Relativity; dark energy comes from the parameterisation",
@@ -232,6 +303,18 @@ FR_REGISTRY = {
         "derivs"     : _derivs_R_lambda_R2,
         "analytic_background": _background_R_lambda_R2,   # used INSTEAD of the ODE
         "z_init_default": 2.5,                            # = highest redshift of validity
+    },
+    "hu_sawicki": {
+        "description": "f(R) = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)), p = 1  (Hu-Sawicki n = 1)",
+        "param_names": ["Lambda", "b"],
+        "labels"     : [r"$\Lambda_{f(R)}$", r"$b_{f(R)}$"],
+        "p0_center"  : np.array([2.1, 0.1]),      # Lambda ~ 3(1-Omega_m) = 2.1 -> LCDM-like (u(0) ~ 0.98); b small = near-LCDM
+        "p0_scatter" : np.array([0.05, 0.02]),
+        "prior_func" : _prior_hu_sawicki,
+        "derivs"     : _derivs_hu_sawicki,
+        "ic_func"    : _ics_hu_sawicki,
+        "ode_options": {"method": "Radau", "rtol": 1e-6, "max_rhs_evals": 20000},
+        "z_init_default": 10.0,                   # E^2(z) is independent of z_init to ~1e-7 for 10..80; larger only costs time
     },
     "R_log_R": {
         "description": "f(R) = R (1 + alpha ln R)",
@@ -308,21 +391,27 @@ MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter
 U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(0) outside ~(0.003, 30): runaway
 
 
-def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False):
+def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False,
+                     ics=None, method="LSODA", max_rhs_evals=None):
     """
     Integrate the f(R) background from z_init to z=0 (see module docstring).
     Returns a Background, or None if the integration fails or leaves the
     physical domain (u <= 0, R <= 0, blow-up, non-finite output, too many function
     evaluations (stiff), or u(0) outside U0_RANGE (runaway solution)).
     With return_reason=True returns (background_or_None, reason_string_or_None).
+    ics = (u_i, u'_i) overrides the initial conditions normally taken from E2_param (which may then be None);
+    method / max_rhs_evals select the scipy integrator and the stiffness cap (default LSODA, MAX_RHS_EVALS).
     """
     def fail(msg):
         return (None, msg) if return_reason else None
 
     N_i = -np.log1p(z_init)
     h = 1e-4
-    u_i = float(E2_param(z_init))
-    v_i = -(1.0 + z_init) * (float(E2_param(z_init + h)) - float(E2_param(z_init - h))) / (2.0 * h)
+    if ics is not None:
+        u_i, v_i = float(ics[0]), float(ics[1])
+    else:
+        u_i = float(E2_param(z_init))
+        v_i = -(1.0 + z_init) * (float(E2_param(z_init + h)) - float(E2_param(z_init - h))) / (2.0 * h)
     R_i = 3.0 * v_i + 12.0 * u_i
     if not (np.isfinite(u_i) and np.isfinite(v_i) and u_i > 0.0 and R_i > 0.0):
         return fail("invalid initial conditions from the parameterisation (u_i or R_i <= 0)")
@@ -332,10 +421,11 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
     class _TooStiff(Exception):
         pass
     n_eval = [0]
+    eval_cap = MAX_RHS_EVALS if max_rhs_evals is None else max_rhs_evals
 
     def rhs(N, y):
         n_eval[0] += 1
-        if n_eval[0] > MAX_RHS_EVALS:
+        if n_eval[0] > eval_cap:
             raise _TooStiff
         u, v = y
         R = max(3.0 * v + 12.0 * u, R_FLOOR)
@@ -353,10 +443,10 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
 
     try:
         with np.errstate(all="ignore"):
-            sol = solve_ivp(rhs, (N_i, 0.0), [u_i, v_i], method="LSODA", rtol=rtol, atol=1e-10,
+            sol = solve_ivp(rhs, (N_i, 0.0), [u_i, v_i], method=method, rtol=rtol, atol=1e-10,
                             dense_output=True, events=(leaves_domain, blows_up))
     except _TooStiff:
-        return fail(f"stiff: more than {MAX_RHS_EVALS} right-hand-side evaluations")
+        return fail(f"stiff: more than {eval_cap} right-hand-side evaluations")
     except Exception as exc:
         return fail(f"integrator error: {exc}")
     if sol.status != 0 or not np.all(np.isfinite(sol.y)):

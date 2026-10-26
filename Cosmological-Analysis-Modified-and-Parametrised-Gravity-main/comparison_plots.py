@@ -30,7 +30,7 @@ CONTOUR_LEVELS = (1 - np.exp(-0.5), 1 - np.exp(-2))     # 1 sigma, 2 sigma
 # chain label -> parameter name
 PARAM_NAMES = {r"$H_0$": "H0", r"$\Omega_m$": "Omega_m", r"$\Omega_0$": "Omega_0", r"$w_0$": "w0", r"$w_a$": "wa",
                r"$\alpha$": "alpha", r"$\delta$": "delta", r"$c$": "c", r"$\xi$": "xi",
-               r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR", r"$\Lambda_{f(R)}$": "Lambda_fR"}
+               r"$\alpha_{f(R)}$": "alpha_fR", r"$n_{f(R)}$": "n_fR", r"$\Lambda_{f(R)}$": "Lambda_fR", r"$b_{f(R)}$": "b_fR"}
 MATTER_ALIASES = ("Omega_m", "Omega_0")                  # what "matter" resolves to, per model
 DEFAULT_PARAMS = ("H0", "matter")
 DEFAULT_PAIR = ("H0", "matter")
