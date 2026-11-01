@@ -1,0 +1,19 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : wowaCDM
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    66.0064 |                 0.8184 |                 0.8015
+$\Omega_m$      |     0.2643 |                 0.0341 |                 0.0828
+$w_0$           |    -0.7641 |                 0.0613 |                 0.0553
+$w_a$           |     0.0886 |                 0.4925 |                 0.6400
+----------------------------------------------------------
+Parameterisation : wowaCDM
+f(R) model       : GR  (f(R) = R: General Relativity; dark energy comes from the parameterisation)
+==========================================================

@@ -106,6 +106,15 @@ LIMITATIONS
   E^2(z) independent of z_init to <~1e-7 everywhere tested (z_init = 10..80).  Both are far below the data errors,
   so this is about robustness and removing the dependence on the parameterisation's dark-energy parameters.
   Like R_lambda_R2, only Omega_m is taken from the parameterisation; its other parameters (w0, ...) are unused.
+* "hu_sawicki_de" = "hu_sawicki" + the parameterisation's dark energy (wCDM, CPL, wowaCDM, JBP, HDE, wCDM_fixed_Omega_m)
+  on top of the Lambda inside f(R).  kappa rho_DE = 3 [E^2_param(z) - Omega_m (1+z)^3] (anchor units) is added to the
+  tt source; ICs = attractor ICs of the base model + the fluid (u += de, u' += d de/dN; the O(1e-9) cross term between
+  delta1 and the fluid is neglected, checked by the z_init convergence test).  The total dark sector is Lambda/3 + fluid
+  + the f(R) correction, so (Lambda, w0, ...) are partly degenerate; LCDM is rejected (a constant fluid duplicates Lambda).
+  The fluid's amplitude is fixed by the parameterisation, (1 - Omega_m_anchor) = 0.7 of the matter-normalised density, so Lambda is
+  an extra constant density: Omega_m,phys = 0.3/(1 + Lambda/3) needs Lambda <~ 0.3 for a realistic matter fraction, and the f(R)
+  deviation (~ Lambda^2 b) is then small -> expect a near-wCDM fit.  Walker start: Lambda = 0.3, b = 0.5.
+  Not available for R_lambda_R2: its closed form assumes a pure-matter source x ~ e^{-3N}.
 * Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
   a valid starting point if the f(R) model has a GR-like matter era at early times.
     - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
@@ -328,6 +337,24 @@ FR_REGISTRY = {
 }
 
 
+# ── "<model>_de": the parameterisation's dark energy ON TOP of the cosmological constant inside f(R) ──────────
+# Same f(R) function, parameters, prior and ICs as the base model, but the parameterisation's dark-energy density
+# rho_DE(N) = E^2_param(z) - Omega_m (1+z)^3 (a separately conserved component, p_DE from its own continuity
+# equation) is added to the source of the f(R) field equations next to the constant -2 Lambda that lives in f.
+# At the level of the tt equation (the only one integrated) it makes no difference whether this term is written as a
+# T_mu_nu component or as Lambda(N) inside f; only the conserved version satisfies the Bianchi identity (kappa p check).
+# Hence the parameterisation's parameters (w0, wa, c, ...) now enter E^2(z).  Omega_m stays the anchor.
+def _de_variant(base):
+    cfg = dict(FR_REGISTRY[base])
+    cfg.update(description=FR_REGISTRY[base]["description"] + "  + parameterisation dark energy on top of Lambda",
+               base_model=base, de_on_top=True,
+               # the fluid already supplies (1 - Omega_m_anchor) = 0.7 of dark energy, so Lambda is an EXTRA constant density:
+               # start small (Lambda = 2.1 would give Omega_m,phys ~ 0.18).  Small Lambda also suppresses the f(R) correction.
+               p0_center=np.array([0.3, 0.5]), p0_scatter=np.array([0.05, 0.1]))
+    return cfg
+FR_REGISTRY["hu_sawicki_de"] = _de_variant("hu_sawicki")
+
+
 def make_fr_expander(fr_model, fixed=None):
     """
     Returns (expand, sampled_idx).  `fixed` = {param_name: value} pins f(R) parameters
@@ -392,7 +419,7 @@ U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(
 
 
 def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False,
-                     ics=None, method="LSODA", max_rhs_evals=None):
+                     ics=None, method="LSODA", max_rhs_evals=None, extra_kappa_rho=None):
     """
     Integrate the f(R) background from z_init to z=0 (see module docstring).
     Returns a Background, or None if the integration fails or leaves the
@@ -401,6 +428,8 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
     With return_reason=True returns (background_or_None, reason_string_or_None).
     ics = (u_i, u'_i) overrides the initial conditions normally taken from E2_param (which may then be None);
     method / max_rhs_evals select the scipy integrator and the stiffness cap (default LSODA, MAX_RHS_EVALS).
+    extra_kappa_rho(N) -> kappa*rho_extra (anchor units) is ADDED to the matter source 3 Omega_m e^{-3N} in the tt equation
+    (a separately conserved dark-energy component; see "hu_sawicki_de").
     """
     def fail(msg):
         return (None, msg) if return_reason else None
@@ -430,7 +459,10 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
         u, v = y
         R = max(3.0 * v + 12.0 * u, R_FLOOR)
         u = max(u, R_FLOOR)
-        R_N = R_N_from_matter(derivs, R, u, 3.0 * Omega_m * np.exp(-3.0 * N))
+        source = 3.0 * Omega_m * np.exp(-3.0 * N)
+        if extra_kappa_rho is not None:
+            source += float(extra_kappa_rho(N))
+        R_N = R_N_from_matter(derivs, R, u, source)
         return [v, R_N / 3.0 - 4.0 * v]          # R' = 3u'' + 12u'
 
     def leaves_domain(N, y):                      # terminal: u<=0 or R<=0

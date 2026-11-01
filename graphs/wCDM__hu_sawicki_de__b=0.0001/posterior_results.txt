@@ -1,0 +1,25 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : wCDM__hu_sawicki_de__b=0.0001
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    66.1541 |                 0.9631 |                 0.9453
+$w_0$           |    -0.7604 |                 0.0908 |                 0.0713
+$\Lambda_{f(R)}$ |     0.3775 |                 0.3052 |                 0.1910
+----------------------------------------------------------
+Parameterisation : wCDM
+f(R) model       : hu_sawicki_de  (f(R) = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)), p = 1  (Hu-Sawicki n = 1)  + parameterisation dark energy on top of Lambda)
+f(R) pinned params: b = 0.0001  (NOT sampled)
+FR_Z_INIT        : 10.0
+Omega_m anchor   : 0.3  (gauge value, NOT sampled; alpha is in anchor units)
+Derived (H0 above is the true present-day value):
+  Omega_m (present, physical) = Omega_m/u(0): 0.2639 +0.0180 / -0.0198   (300 samples)
+  H0 (anchor, sets ICs) = H0/sqrt(u(0)): 62.2408 +1.9678 / -2.5301   (300 samples)
+IC convergence test: max|E2(z_init=10)/E2(z_init=20) - 1| = 1.29e-09 on z in [0, 2.4]
+==========================================================

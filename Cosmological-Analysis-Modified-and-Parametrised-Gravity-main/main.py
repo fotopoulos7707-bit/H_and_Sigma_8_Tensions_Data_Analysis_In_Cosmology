@@ -23,11 +23,13 @@ from results_io import save_histogram_data, write_posterior_summary
 # ════════════════════════════════════════════════════════════════════════════
 PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "hu_sawicki"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
                          #   "hu_sawicki" f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)), p = 1  -> ODE started on its own attractor
+                         #   "hu_sawicki_de" the same, PLUS the parameterisation's dark energy (w0, wa, ...) on top of Lambda in f(R);
+                         #                use with wCDM / CPL / wowaCDM / JBP / HDE (not LCDM)
                          #                (only Omega_m is taken from the parameterisation; LCDM is the natural companion)
                          # Modified models need a parameterisation with conserved matter (not IDE / param_Hubble* / Custom_Universal).
 FR_FIXED_PARAMS  = {}    # pin f(R) parameters instead of sampling them, e.g. {"n": 0.5} (power_law) or {"alpha": 0.4}.
@@ -73,7 +75,7 @@ if not _active:
 RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
 # ────────────────────────────────────────────────────────────────────────────
 
-N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
+N_WALKERS, N_BURNIN, N_STEPS = 64, 500, 10000
 N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
                                             # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
 RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random

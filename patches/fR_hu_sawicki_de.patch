@@ -1,0 +1,209 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+index b9e67ff..ea5b641 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+@@ -15,6 +15,9 @@ Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
+ 7. hu_sawicki (p = 1): the closed-form derivatives equal those of f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p));
+    the first-order attractor ICs solve the tt equation through O(b); b -> 0 is LCDM; kappa p = 0 along the
+    solution; E^2(z) is independent of FR_Z_INIT; the de Sitter point and the prior edges (b = 0, b = 2) behave.
++8. hu_sawicki_de (parameterisation dark energy on top of Lambda in f(R)): b -> 0, w0 = -1 equals the analytic LCDM with
++   Omega_Lambda = Lambda/3 + (1 - Omega_m); E^2 is independent of FR_Z_INIT; w0 now changes E^2 (it does not for
++   hu_sawicki); kappa p of the f(R) side equals the fluid's kappa p_DE (Bianchi identity); LCDM is rejected.
+ """
+ import numpy as np
+ 
+@@ -231,4 +234,58 @@ import time
+ t0 = time.perf_counter(); [bHS(10.0)((), (2.1, 0.1)) for _ in range(5)]; ms = (time.perf_counter() - t0) / 5 * 1e3
+ report("hu_sawicki: cost per background", True, f"{ms:.0f} ms per solve at (Lambda, b) = (2.1, 0.1)", info=True)
+ 
++# ── 8. hu_sawicki_de ───────────────────────────────────────────────────────────
++HSD = fR.FR_REGISTRY["hu_sawicki_de"]
++bHD = lambda par, zi=10.0: make_background_builder(par, "hu_sawicki_de", 0.05, 0.17, zi, OM)
++
++# 8a. analytic limit
++Lm = 1.2
++bgd = bHD("wCDM")((-1.0,), (Lm, 1e-9))
++ref = (OM * (1 + zs) ** 3 + Lm / 3 + (1 - OM)); ref = ref / ref[0]
++dev = np.max(np.abs(bgd.E2(zs) / ref - 1))
++report("hu_sawicki_de: b->0, w0=-1 is LCDM with Omega_Lambda = Lambda/3 + 1 - Omega_m", dev < 1e-6, f"max |E2/E2_analytic - 1| = {dev:.1e}")
++
++# 8b. starting-redshift independence
++for par, th_p, th in [("wCDM", (-0.8,), (1.2, 0.1)), ("wCDM", (-1.2,), (0.9, 0.5)), ("CPL", (-0.9, 0.3), (1.0, 0.05))]:
++    Ed = [bHD(par, zi)(th_p, th) for zi in (10.0, 20.0, 40.0)]
++    ok = all(e is not None for e in Ed)
++    dz = max(np.max(np.abs(Ed[0].E2(zs) / Ed[1].E2(zs) - 1)), np.max(np.abs(Ed[1].E2(zs) / Ed[2].E2(zs) - 1))) if ok else np.inf
++    report(f"hu_sawicki_de IC convergence [{par} {th_p} {th}]", dz < 1e-6, f"max|E2(zi)/E2(2zi)-1| for zi=10,20 = {dz:.1e}  (threshold 1e-6)")
++
++# 8c. the parameterisation's parameters are live (and are dead without the fluid)
++mk_b = lambda w0: make_background_builder("wCDM", "hu_sawicki", 0.05, 0.17, 10.0, OM)((w0,), (1.2, 0.1)).E2(zs)
++mk_d = lambda w0: bHD("wCDM")((w0,), (1.2, 0.1)).E2(zs)
++sens_b, sens_d = np.max(np.abs(mk_b(-0.8) / mk_b(-1.1) - 1)), np.max(np.abs(mk_d(-0.8) / mk_d(-1.1) - 1))
++report("hu_sawicki_de: w0 enters E^2 (and does not for hu_sawicki)", sens_d > 1e-2 and sens_b == 0.0,
++       f"max |E2(w0=-0.8)/E2(w0=-1.1) - 1|: hu_sawicki_de {sens_d:.1e}, hu_sawicki {sens_b:.1e}")
++
++# 8d. Bianchi identity: kappa p (f(R) side) = kappa p_DE = -kappa rho_DE - (1/3) d kappa rho_DE/dN
++for w0, th in [(-0.8, (1.2, 0.1)), (-1.2, (0.9, 0.5))]:
++    d = HSD["derivs"](th)
++    de = lambda z: P.E2_wcdm(z, (OM, w0)) - OM * (1 + z) ** 3
++    ics = HSD["ic_func"](OM, th, 10.0); h_ = 1e-4
++    ics = (ics[0] + de(10.0), ics[1] - 11.0 * (de(10.0 + h_) - de(10.0 - h_)) / (2 * h_))
++    krho_de = lambda N: 3.0 * de(np.expm1(-N))
++    bg = fR.solve_background(None, OM, d, 10.0, ics=ics, extra_kappa_rho=krho_de, **{**HSD["ode_options"], "rtol": 1e-10, "max_rhs_evals": 10**6})
++    def state(N):
++        u, v = bg.sol.sol(N); R = 3 * v + 12 * u
++        return u, v, R, fR.R_N_from_matter(d, R, u, 3 * OM * np.exp(-3 * N) + krho_de(N))
++    worst = 0.0
++    for z in (4.0, 2.0, 1.0, 0.3, 0.1):
++        N, hh = -np.log1p(z), 1e-4
++        u, v, R, R_N = state(N)
++        R_NN = (state(N + hh)[3] - state(N - hh)[3]) / (2 * hh)
++        kp_de = -krho_de(N) - (krho_de(N + hh) - krho_de(N - hh)) / (2 * hh) / 3
++        worst = max(worst, abs(fR.kappa_p(d, R, R_N, R_NN, u, v) - kp_de) / fR.kappa_rho(d, R, R_N, u))
++    report(f"hu_sawicki_de Bianchi [wCDM w0={w0} {th}]", worst < 1e-5, f"max |kappa p - kappa p_DE|/kappa rho = {worst:.1e}  (threshold 1e-5)")
++
++# 8e. LCDM is rejected (constant fluid duplicates Lambda); other parameterisations accepted
++from run_config import get_run_config
++try:
++    get_run_config("LCDM", "hu_sawicki_de"); rejected = False
++except ValueError:
++    rejected = True
++get_run_config("CPL", "hu_sawicki_de")
++report("hu_sawicki_de: LCDM rejected, CPL accepted", rejected, "run_config raises for LCDM + hu_sawicki_de")
++
+ print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+index 261a8a7..619574d 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+@@ -106,6 +106,15 @@ LIMITATIONS
+   E^2(z) independent of z_init to <~1e-7 everywhere tested (z_init = 10..80).  Both are far below the data errors,
+   so this is about robustness and removing the dependence on the parameterisation's dark-energy parameters.
+   Like R_lambda_R2, only Omega_m is taken from the parameterisation; its other parameters (w0, ...) are unused.
++* "hu_sawicki_de" = "hu_sawicki" + the parameterisation's dark energy (wCDM, CPL, wowaCDM, JBP, HDE, wCDM_fixed_Omega_m)
++  on top of the Lambda inside f(R).  kappa rho_DE = 3 [E^2_param(z) - Omega_m (1+z)^3] (anchor units) is added to the
++  tt source; ICs = attractor ICs of the base model + the fluid (u += de, u' += d de/dN; the O(1e-9) cross term between
++  delta1 and the fluid is neglected, checked by the z_init convergence test).  The total dark sector is Lambda/3 + fluid
++  + the f(R) correction, so (Lambda, w0, ...) are partly degenerate; LCDM is rejected (a constant fluid duplicates Lambda).
++  The fluid's amplitude is fixed by the parameterisation, (1 - Omega_m_anchor) = 0.7 of the matter-normalised density, so Lambda is
++  an extra constant density: Omega_m,phys = 0.3/(1 + Lambda/3) needs Lambda <~ 0.3 for a realistic matter fraction, and the f(R)
++  deviation (~ Lambda^2 b) is then small -> expect a near-wCDM fit.  Walker start: Lambda = 0.3, b = 0.5.
++  Not available for R_lambda_R2: its closed form assumes a pure-matter source x ~ e^{-3N}.
+ * Initial-condition dependence.  The parameterisation's (u, u') at FR_Z_INIT are only
+   a valid starting point if the f(R) model has a GR-like matter era at early times.
+     - "power_law" (0<n<1): alpha R^n / R -> 0 as R -> infinity, so E^2(z) converges
+@@ -328,6 +337,24 @@ FR_REGISTRY = {
+ }
+ 
+ 
++# ── "<model>_de": the parameterisation's dark energy ON TOP of the cosmological constant inside f(R) ──────────
++# Same f(R) function, parameters, prior and ICs as the base model, but the parameterisation's dark-energy density
++# rho_DE(N) = E^2_param(z) - Omega_m (1+z)^3 (a separately conserved component, p_DE from its own continuity
++# equation) is added to the source of the f(R) field equations next to the constant -2 Lambda that lives in f.
++# At the level of the tt equation (the only one integrated) it makes no difference whether this term is written as a
++# T_mu_nu component or as Lambda(N) inside f; only the conserved version satisfies the Bianchi identity (kappa p check).
++# Hence the parameterisation's parameters (w0, wa, c, ...) now enter E^2(z).  Omega_m stays the anchor.
++def _de_variant(base):
++    cfg = dict(FR_REGISTRY[base])
++    cfg.update(description=FR_REGISTRY[base]["description"] + "  + parameterisation dark energy on top of Lambda",
++               base_model=base, de_on_top=True,
++               # the fluid already supplies (1 - Omega_m_anchor) = 0.7 of dark energy, so Lambda is an EXTRA constant density:
++               # start small (Lambda = 2.1 would give Omega_m,phys ~ 0.18).  Small Lambda also suppresses the f(R) correction.
++               p0_center=np.array([0.3, 0.5]), p0_scatter=np.array([0.05, 0.1]))
++    return cfg
++FR_REGISTRY["hu_sawicki_de"] = _de_variant("hu_sawicki")
++
++
+ def make_fr_expander(fr_model, fixed=None):
+     """
+     Returns (expand, sampled_idx).  `fixed` = {param_name: value} pins f(R) parameters
+@@ -392,7 +419,7 @@ U0_RANGE = (1e-2, 1e2)     # u(0) outside this <=> physical Omega_m = Omega_m/u(
+ 
+ 
+ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason=False,
+-                     ics=None, method="LSODA", max_rhs_evals=None):
++                     ics=None, method="LSODA", max_rhs_evals=None, extra_kappa_rho=None):
+     """
+     Integrate the f(R) background from z_init to z=0 (see module docstring).
+     Returns a Background, or None if the integration fails or leaves the
+@@ -401,6 +428,8 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
+     With return_reason=True returns (background_or_None, reason_string_or_None).
+     ics = (u_i, u'_i) overrides the initial conditions normally taken from E2_param (which may then be None);
+     method / max_rhs_evals select the scipy integrator and the stiffness cap (default LSODA, MAX_RHS_EVALS).
++    extra_kappa_rho(N) -> kappa*rho_extra (anchor units) is ADDED to the matter source 3 Omega_m e^{-3N} in the tt equation
++    (a separately conserved dark-energy component; see "hu_sawicki_de").
+     """
+     def fail(msg):
+         return (None, msg) if return_reason else None
+@@ -430,7 +459,10 @@ def solve_background(E2_param, Omega_m, derivs, z_init, rtol=1e-8, return_reason
+         u, v = y
+         R = max(3.0 * v + 12.0 * u, R_FLOOR)
+         u = max(u, R_FLOOR)
+-        R_N = R_N_from_matter(derivs, R, u, 3.0 * Omega_m * np.exp(-3.0 * N))
++        source = 3.0 * Omega_m * np.exp(-3.0 * N)
++        if extra_kappa_rho is not None:
++            source += float(extra_kappa_rho(N))
++        R_N = R_N_from_matter(derivs, R, u, source)
+         return [v, R_N / 3.0 - 4.0 * v]          # R' = 3u'' + 12u'
+ 
+     def leaves_domain(N, y):                      # terminal: u<=0 or R<=0
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+index be321a1..01c00a6 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/likelihood.py
+@@ -101,6 +101,7 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
+     analytic = fcfg.get("analytic_background")
+     ic_func = fcfg.get("ic_func")                # model-specific attractor ICs (replace the parameterisation's)
+     ode_options = fcfg.get("ode_options", {})    # e.g. method / rtol / max_rhs_evals for very stiff models
++    de_on_top = fcfg.get("de_on_top", False)    # parameterisation's dark energy added to the f(R) source
+ 
+     def build(theta_p, theta_fr, return_reason=False):
+         theta = expand(theta_p)
+@@ -109,9 +110,16 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
+             return out if return_reason else out[0]
+         if ic_func is not None:                  # ODE started on the model's own attractor
+             theta_f = expand_fr(theta_fr)
+-            return fR.solve_background(None, omega_m_func(theta), derivs_of(theta_f), fr_z_init,
+-                                       return_reason=return_reason,
+-                                       ics=ic_func(omega_m_func(theta), theta_f, fr_z_init), **ode_options)
++            Om = omega_m_func(theta)
++            ics, extra = ic_func(Om, theta_f, fr_z_init), None
++            if de_on_top:                        # parameterisation's dark energy: kappa rho_DE / 3 = E2_param - Om (1+z)^3
++                de = lambda z: float(active_E2(z, theta)) - Om * (1.0 + z) ** 3
++                h = 1e-4
++                ics = (ics[0] + de(fr_z_init),
++                       ics[1] - (1.0 + fr_z_init) * (de(fr_z_init + h) - de(fr_z_init - h)) / (2.0 * h))
++                extra = lambda N: 3.0 * de(np.expm1(-N))
++            return fR.solve_background(None, Om, derivs_of(theta_f), fr_z_init, return_reason=return_reason,
++                                       ics=ics, extra_kappa_rho=extra, **ode_options)
+         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
+                                    derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
+     return build
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+index 9d2fba0..3e2fa31 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/run_config.py
+@@ -65,10 +65,14 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
+             rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
+                     "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)",
+                     "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds",
+-                    "hu_sawicki": "f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 needs Lambda > 0 and b > 0, and a de Sitter attractor needs b < 2 (both inside the prior bounds)"}[fr_model]
++                    "hu_sawicki": "f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 needs Lambda > 0 and b > 0, and a de Sitter attractor needs b < 2 (both inside the prior bounds)"}[fcfg.get("base_model", fr_model)]
+             raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
+                              f"Bounds: {fR.FR_PRIOR_BOUNDS}")
+ 
++    if fcfg.get("de_on_top") and parameterisation == "LCDM":
++        raise ValueError(f"FR_MODEL '{fr_model}' adds the parameterisation's dark energy on top of Lambda, but LCDM's is a "
++                         f"constant, i.e. a second cosmological constant degenerate with Lambda. Use wCDM, CPL, wowaCDM, JBP, "
++                         f"HDE or wCDM_fixed_Omega_m.")
+     if fr_model != "GR" and pcfg["omega_m_func"] is None:
+         ok = [k for k, v in P.PARAMETERISATION_REGISTRY.items() if v["omega_m_func"] is not None]
+         raise ValueError(f"PARAMETERISATION '{parameterisation}' has no standard conserved-matter "
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+index 1500415..47d55c4 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/main.py
+@@ -30,2 +30,4 @@ FR_MODEL         = "R_lambda_R2"  # f(R) gravity model (fR.py).  Options:
+                          #   "hu_sawicki" f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)), p = 1  -> ODE started on its own attractor
++                         #   "hu_sawicki_de" the same, PLUS the parameterisation's dark energy (w0, wa, ...) on top of Lambda in f(R);
++                         #                use with wCDM / CPL / wowaCDM / JBP / HDE (not LCDM)
+                          #                (only Omega_m is taken from the parameterisation; LCDM is the natural companion)

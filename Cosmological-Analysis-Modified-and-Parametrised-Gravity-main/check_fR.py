@@ -15,6 +15,9 @@ Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
 7. hu_sawicki (p = 1): the closed-form derivatives equal those of f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p));
    the first-order attractor ICs solve the tt equation through O(b); b -> 0 is LCDM; kappa p = 0 along the
    solution; E^2(z) is independent of FR_Z_INIT; the de Sitter point and the prior edges (b = 0, b = 2) behave.
+8. hu_sawicki_de (parameterisation dark energy on top of Lambda in f(R)): b -> 0, w0 = -1 equals the analytic LCDM with
+   Omega_Lambda = Lambda/3 + (1 - Omega_m); E^2 is independent of FR_Z_INIT; w0 now changes E^2 (it does not for
+   hu_sawicki); kappa p of the f(R) side equals the fluid's kappa p_DE (Bianchi identity); LCDM is rejected.
 """
 import numpy as np
 
@@ -230,5 +233,59 @@ report("pinned parameters [hu_sawicki b=0.1]", np.array_equal(free.E2(zs), pinne
 import time
 t0 = time.perf_counter(); [bHS(10.0)((), (2.1, 0.1)) for _ in range(5)]; ms = (time.perf_counter() - t0) / 5 * 1e3
 report("hu_sawicki: cost per background", True, f"{ms:.0f} ms per solve at (Lambda, b) = (2.1, 0.1)", info=True)
+
+# ── 8. hu_sawicki_de ───────────────────────────────────────────────────────────
+HSD = fR.FR_REGISTRY["hu_sawicki_de"]
+bHD = lambda par, zi=10.0: make_background_builder(par, "hu_sawicki_de", 0.05, 0.17, zi, OM)
+
+# 8a. analytic limit
+Lm = 1.2
+bgd = bHD("wCDM")((-1.0,), (Lm, 1e-9))
+ref = (OM * (1 + zs) ** 3 + Lm / 3 + (1 - OM)); ref = ref / ref[0]
+dev = np.max(np.abs(bgd.E2(zs) / ref - 1))
+report("hu_sawicki_de: b->0, w0=-1 is LCDM with Omega_Lambda = Lambda/3 + 1 - Omega_m", dev < 1e-6, f"max |E2/E2_analytic - 1| = {dev:.1e}")
+
+# 8b. starting-redshift independence
+for par, th_p, th in [("wCDM", (-0.8,), (1.2, 0.1)), ("wCDM", (-1.2,), (0.9, 0.5)), ("CPL", (-0.9, 0.3), (1.0, 0.05))]:
+    Ed = [bHD(par, zi)(th_p, th) for zi in (10.0, 20.0, 40.0)]
+    ok = all(e is not None for e in Ed)
+    dz = max(np.max(np.abs(Ed[0].E2(zs) / Ed[1].E2(zs) - 1)), np.max(np.abs(Ed[1].E2(zs) / Ed[2].E2(zs) - 1))) if ok else np.inf
+    report(f"hu_sawicki_de IC convergence [{par} {th_p} {th}]", dz < 1e-6, f"max|E2(zi)/E2(2zi)-1| for zi=10,20 = {dz:.1e}  (threshold 1e-6)")
+
+# 8c. the parameterisation's parameters are live (and are dead without the fluid)
+mk_b = lambda w0: make_background_builder("wCDM", "hu_sawicki", 0.05, 0.17, 10.0, OM)((w0,), (1.2, 0.1)).E2(zs)
+mk_d = lambda w0: bHD("wCDM")((w0,), (1.2, 0.1)).E2(zs)
+sens_b, sens_d = np.max(np.abs(mk_b(-0.8) / mk_b(-1.1) - 1)), np.max(np.abs(mk_d(-0.8) / mk_d(-1.1) - 1))
+report("hu_sawicki_de: w0 enters E^2 (and does not for hu_sawicki)", sens_d > 1e-2 and sens_b == 0.0,
+       f"max |E2(w0=-0.8)/E2(w0=-1.1) - 1|: hu_sawicki_de {sens_d:.1e}, hu_sawicki {sens_b:.1e}")
+
+# 8d. Bianchi identity: kappa p (f(R) side) = kappa p_DE = -kappa rho_DE - (1/3) d kappa rho_DE/dN
+for w0, th in [(-0.8, (1.2, 0.1)), (-1.2, (0.9, 0.5))]:
+    d = HSD["derivs"](th)
+    de = lambda z: P.E2_wcdm(z, (OM, w0)) - OM * (1 + z) ** 3
+    ics = HSD["ic_func"](OM, th, 10.0); h_ = 1e-4
+    ics = (ics[0] + de(10.0), ics[1] - 11.0 * (de(10.0 + h_) - de(10.0 - h_)) / (2 * h_))
+    krho_de = lambda N: 3.0 * de(np.expm1(-N))
+    bg = fR.solve_background(None, OM, d, 10.0, ics=ics, extra_kappa_rho=krho_de, **{**HSD["ode_options"], "rtol": 1e-10, "max_rhs_evals": 10**6})
+    def state(N):
+        u, v = bg.sol.sol(N); R = 3 * v + 12 * u
+        return u, v, R, fR.R_N_from_matter(d, R, u, 3 * OM * np.exp(-3 * N) + krho_de(N))
+    worst = 0.0
+    for z in (4.0, 2.0, 1.0, 0.3, 0.1):
+        N, hh = -np.log1p(z), 1e-4
+        u, v, R, R_N = state(N)
+        R_NN = (state(N + hh)[3] - state(N - hh)[3]) / (2 * hh)
+        kp_de = -krho_de(N) - (krho_de(N + hh) - krho_de(N - hh)) / (2 * hh) / 3
+        worst = max(worst, abs(fR.kappa_p(d, R, R_N, R_NN, u, v) - kp_de) / fR.kappa_rho(d, R, R_N, u))
+    report(f"hu_sawicki_de Bianchi [wCDM w0={w0} {th}]", worst < 1e-5, f"max |kappa p - kappa p_DE|/kappa rho = {worst:.1e}  (threshold 1e-5)")
+
+# 8e. LCDM is rejected (constant fluid duplicates Lambda); other parameterisations accepted
+from run_config import get_run_config
+try:
+    get_run_config("LCDM", "hu_sawicki_de"); rejected = False
+except ValueError:
+    rejected = True
+get_run_config("CPL", "hu_sawicki_de")
+report("hu_sawicki_de: LCDM rejected, CPL accepted", rejected, "run_config raises for LCDM + hu_sawicki_de")
 
 print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")

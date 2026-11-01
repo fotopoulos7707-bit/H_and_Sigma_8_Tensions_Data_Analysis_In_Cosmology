@@ -101,6 +101,7 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
     analytic = fcfg.get("analytic_background")
     ic_func = fcfg.get("ic_func")                # model-specific attractor ICs (replace the parameterisation's)
     ode_options = fcfg.get("ode_options", {})    # e.g. method / rtol / max_rhs_evals for very stiff models
+    de_on_top = fcfg.get("de_on_top", False)    # parameterisation's dark energy added to the f(R) source
 
     def build(theta_p, theta_fr, return_reason=False):
         theta = expand(theta_p)
@@ -109,9 +110,16 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
             return out if return_reason else out[0]
         if ic_func is not None:                  # ODE started on the model's own attractor
             theta_f = expand_fr(theta_fr)
-            return fR.solve_background(None, omega_m_func(theta), derivs_of(theta_f), fr_z_init,
-                                       return_reason=return_reason,
-                                       ics=ic_func(omega_m_func(theta), theta_f, fr_z_init), **ode_options)
+            Om = omega_m_func(theta)
+            ics, extra = ic_func(Om, theta_f, fr_z_init), None
+            if de_on_top:                        # parameterisation's dark energy: kappa rho_DE / 3 = E2_param - Om (1+z)^3
+                de = lambda z: float(active_E2(z, theta)) - Om * (1.0 + z) ** 3
+                h = 1e-4
+                ics = (ics[0] + de(fr_z_init),
+                       ics[1] - (1.0 + fr_z_init) * (de(fr_z_init + h) - de(fr_z_init - h)) / (2.0 * h))
+                extra = lambda N: 3.0 * de(np.expm1(-N))
+            return fR.solve_background(None, Om, derivs_of(theta_f), fr_z_init, return_reason=return_reason,
+                                       ics=ics, extra_kappa_rho=extra, **ode_options)
         return fR.solve_background(lambda z: active_E2(z, theta), omega_m_func(theta),
                                    derivs_of(expand_fr(theta_fr)), fr_z_init, return_reason=return_reason)
     return build

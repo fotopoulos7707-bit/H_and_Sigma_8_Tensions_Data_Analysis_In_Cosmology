@@ -65,10 +65,14 @@ def get_run_config(parameterisation, fr_model, fr_fixed=None, omega_m_anchor=0.3
             rule = {"power_law": "f_RR > 0 needs alpha < 0 for 0 < n < 1 and alpha > 0 for n > 1 (and alpha, n inside their prior bounds)",
                     "R_log_R": "f_RR > 0 needs alpha > 0 (inside the prior bounds)",
                     "R_lambda_R2": "f_RR = 2 alpha > 0 needs alpha > 0, with Lambda and alpha inside their prior bounds",
-                    "hu_sawicki": "f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 needs Lambda > 0 and b > 0, and a de Sitter attractor needs b < 2 (both inside the prior bounds)"}[fr_model]
+                    "hu_sawicki": "f_RR = 4 Lambda^2 b/(R + Lambda b)^3 > 0 needs Lambda > 0 and b > 0, and a de Sitter attractor needs b < 2 (both inside the prior bounds)"}[fcfg.get("base_model", fr_model)]
             raise ValueError(f"FR_FIXED_PARAMS={fr_fixed} violates the f(R) prior/stability condition: {rule}. "
                              f"Bounds: {fR.FR_PRIOR_BOUNDS}")
 
+    if fcfg.get("de_on_top") and parameterisation == "LCDM":
+        raise ValueError(f"FR_MODEL '{fr_model}' adds the parameterisation's dark energy on top of Lambda, but LCDM's is a "
+                         f"constant, i.e. a second cosmological constant degenerate with Lambda. Use wCDM, CPL, wowaCDM, JBP, "
+                         f"HDE or wCDM_fixed_Omega_m.")
     if fr_model != "GR" and pcfg["omega_m_func"] is None:
         ok = [k for k, v in P.PARAMETERISATION_REGISTRY.items() if v["omega_m_func"] is not None]
         raise ValueError(f"PARAMETERISATION '{parameterisation}' has no standard conserved-matter "
