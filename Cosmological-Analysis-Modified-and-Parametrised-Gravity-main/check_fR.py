@@ -125,6 +125,10 @@ report("R_lambda_R2: truncation guard", ok_small is not None and ok_big is None,
 # ── 7. hu_sawicki ──────────────────────────────────────────────────────────────
 HS = fR.FR_REGISTRY["hu_sawicki"]
 Lam, bb = 2.1, 0.1
+# Sections 7 and 8 test the equations and the initial conditions, not the production tolerance: run them tight.
+# (Section 9 measures the production tolerance.)  ode_options is shared by hu_sawicki and hu_sawicki_de.
+_prod_opts = dict(HS["ode_options"])
+HS["ode_options"].update(rtol=1e-8, max_rhs_evals=10**6)
 
 # 7a. definition: literal p = 1 form  f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p))  and its derivatives
 try:
@@ -230,10 +234,6 @@ free = bHS(10.0)((), (2.1, 0.1))
 pinned = bHS(10.0, {"b": 0.1})((), (2.1,))
 report("pinned parameters [hu_sawicki b=0.1]", np.array_equal(free.E2(zs), pinned.E2(zs)), "E2(z) identical to the free-parameter build")
 
-import time
-t0 = time.perf_counter(); [bHS(10.0)((), (2.1, 0.1)) for _ in range(5)]; ms = (time.perf_counter() - t0) / 5 * 1e3
-report("hu_sawicki: cost per background", True, f"{ms:.0f} ms per solve at (Lambda, b) = (2.1, 0.1)", info=True)
-
 # ── 8. hu_sawicki_de ───────────────────────────────────────────────────────────
 HSD = fR.FR_REGISTRY["hu_sawicki_de"]
 bHD = lambda par, zi=10.0: make_background_builder(par, "hu_sawicki_de", 0.05, 0.17, zi, OM)
@@ -287,5 +287,25 @@ except ValueError:
     rejected = True
 get_run_config("CPL", "hu_sawicki_de")
 report("hu_sawicki_de: LCDM rejected, CPL accepted", rejected, "run_config raises for LCDM + hu_sawicki_de")
+
+# ── 9. production tolerance ────────────────────────────────────────────────────
+HS["ode_options"].clear(); HS["ode_options"].update(_prod_opts)            # restore the registered (production) options
+import time
+def _E2_at(par, model, th_p, th_f, tight):
+    saved = dict(HS["ode_options"])
+    if tight: HS["ode_options"].update(rtol=1e-9, max_rhs_evals=10**6)
+    try:
+        bg = make_background_builder(par, model, 0.05, 0.17, 10.0, OM)(th_p, th_f)
+    finally:
+        HS["ode_options"].clear(); HS["ode_options"].update(saved)
+    return bg.E2(zs)
+cases = [("LCDM", "hu_sawicki", (), (2.3, 0.1)), ("LCDM", "hu_sawicki", (), (2.3, 1e-3)), ("LCDM", "hu_sawicki", (), (2.9, 1.4)),
+         ("LCDM", "hu_sawicki", (), (3.5, 1.9)), ("wCDM", "hu_sawicki_de", (-0.8,), (0.5, 0.5)), ("wCDM", "hu_sawicki_de", (-1.3,), (0.3, 1.5))]
+worst = max(np.max(np.abs(_E2_at(p, m, tp, tf, False) / _E2_at(p, m, tp, tf, True) - 1)) for p, m, tp, tf in cases)
+report("hu_sawicki(_de): production rtol accuracy vs rtol=1e-9", worst < 1e-4,
+       f"rtol={HS['ode_options']['rtol']:g}: max|E2/E2_ref - 1| = {worst:.1e} over {len(cases)} cases (threshold 1e-4; ~1e-3 in lnL on Pantheon+CC+BAO+clu)")
+for p, m, tp, tf in cases[::3]:
+    t0 = time.perf_counter(); [make_background_builder(p, m, 0.05, 0.17, 10.0, OM)(tp, tf) for _ in range(5)]
+    report(f"{m}: cost per background {tf}", True, f"{(time.perf_counter() - t0) / 5 * 1e3:.0f} ms per solve", info=True)
 
 print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")

@@ -95,8 +95,20 @@ LIMITATIONS
   mode and needs ~1e3-1e6 right-hand-side evaluations (growing like (1 + z_init)^4.5 and as b -> 0), so the generic
   5000-evaluation cap rejects most of the parameter space (measured: 11 of 15 tested (b, z_init) combinations failed).
   BDF is even slower; Radau (L-stable, follows the attractor) needs ~2-5e3 evaluations (~50 ms), nearly independent of
-  z_init, and agrees with the oscillation-resolving LSODA solution to <~4e-8.  Radau is therefore registered via
-  "ode_options".
+  z_init, and agrees with the oscillation-resolving LSODA solution to <~4e-8 at rtol = 1e-6.  Radau is therefore
+  registered via "ode_options".
+  TOLERANCE.  The solve is ~96% of a likelihood evaluation (the Pantheon+ term costs ~2 ms), and its cost is set by rtol.
+  Measured on Pantheon+SH0ES + CC + BAO + clustering (30 points over the posterior region and the corners; 250 random
+  prior points for robustness; reference rtol = 1e-9):
+        rtol   ms/evaluation   max|E^2 error|   max|d lnL|
+        1e-6        38             8e-8            8e-6
+        1e-5        25             8e-7            1e-4
+        1e-4        17             2e-5            1e-3
+  (hu_sawicki_de: 74 / 38 / 24 ms per solve.)  No solve changed between success and failure at any of the three
+  tolerances.  rtol = 1e-4 is registered: lnL errors of 1e-3 are far below the O(0.1-1) differences an MCMC step is
+  sensitive to.  Set "rtol" in "ode_options" to 1e-6 for ~100x smaller errors at ~2.4-3x the cost.  Note that the IC
+  convergence number printed by main.py then shows the tolerance floor (~1e-5), not the IC dependence; it is
+  an informational diagnostic, and check_fR.py tests the IC dependence at a tight tolerance.
   INITIAL CONDITIONS (a refinement).  The ODE is started on the model's own high-curvature attractor
   u = x + Lambda/3 + delta1, x = Omega_m e^{-3N}, with delta1 (first order in g = 2 Lambda c/(R + c)) derived in
   _ics_hu_sawicki, instead of the parameterisation's E^2.  The latter has Omega_Lambda = 1 - Omega_m, which equals
@@ -322,7 +334,7 @@ FR_REGISTRY = {
         "prior_func" : _prior_hu_sawicki,
         "derivs"     : _derivs_hu_sawicki,
         "ic_func"    : _ics_hu_sawicki,
-        "ode_options": {"method": "Radau", "rtol": 1e-6, "max_rhs_evals": 20000},
+        "ode_options": {"method": "Radau", "rtol": 1e-4, "max_rhs_evals": 20000},   # rtol: see "hu_sawicki" in the docstring
         "z_init_default": 10.0,                   # E^2(z) is independent of z_init to ~1e-7 for 10..80; larger only costs time
     },
     "R_log_R": {

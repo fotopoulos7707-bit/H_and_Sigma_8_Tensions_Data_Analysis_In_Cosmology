@@ -1,0 +1,87 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+index ea5b641..27e332e 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/check_fR.py
+@@ -125,6 +125,10 @@ report("R_lambda_R2: truncation guard", ok_small is not None and ok_big is None,
+ # ── 7. hu_sawicki ──────────────────────────────────────────────────────────────
+ HS = fR.FR_REGISTRY["hu_sawicki"]
+ Lam, bb = 2.1, 0.1
++# Sections 7 and 8 test the equations and the initial conditions, not the production tolerance: run them tight.
++# (Section 9 measures the production tolerance.)  ode_options is shared by hu_sawicki and hu_sawicki_de.
++_prod_opts = dict(HS["ode_options"])
++HS["ode_options"].update(rtol=1e-8, max_rhs_evals=10**6)
+ 
+ # 7a. definition: literal p = 1 form  f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p))  and its derivatives
+ try:
+@@ -230,10 +234,6 @@ free = bHS(10.0)((), (2.1, 0.1))
+ pinned = bHS(10.0, {"b": 0.1})((), (2.1,))
+ report("pinned parameters [hu_sawicki b=0.1]", np.array_equal(free.E2(zs), pinned.E2(zs)), "E2(z) identical to the free-parameter build")
+ 
+-import time
+-t0 = time.perf_counter(); [bHS(10.0)((), (2.1, 0.1)) for _ in range(5)]; ms = (time.perf_counter() - t0) / 5 * 1e3
+-report("hu_sawicki: cost per background", True, f"{ms:.0f} ms per solve at (Lambda, b) = (2.1, 0.1)", info=True)
+-
+ # ── 8. hu_sawicki_de ───────────────────────────────────────────────────────────
+ HSD = fR.FR_REGISTRY["hu_sawicki_de"]
+ bHD = lambda par, zi=10.0: make_background_builder(par, "hu_sawicki_de", 0.05, 0.17, zi, OM)
+@@ -288,4 +288,24 @@ except ValueError:
+ get_run_config("CPL", "hu_sawicki_de")
+ report("hu_sawicki_de: LCDM rejected, CPL accepted", rejected, "run_config raises for LCDM + hu_sawicki_de")
+ 
++# ── 9. production tolerance ────────────────────────────────────────────────────
++HS["ode_options"].clear(); HS["ode_options"].update(_prod_opts)            # restore the registered (production) options
++import time
++def _E2_at(par, model, th_p, th_f, tight):
++    saved = dict(HS["ode_options"])
++    if tight: HS["ode_options"].update(rtol=1e-9, max_rhs_evals=10**6)
++    try:
++        bg = make_background_builder(par, model, 0.05, 0.17, 10.0, OM)(th_p, th_f)
++    finally:
++        HS["ode_options"].clear(); HS["ode_options"].update(saved)
++    return bg.E2(zs)
++cases = [("LCDM", "hu_sawicki", (), (2.3, 0.1)), ("LCDM", "hu_sawicki", (), (2.3, 1e-3)), ("LCDM", "hu_sawicki", (), (2.9, 1.4)),
++         ("LCDM", "hu_sawicki", (), (3.5, 1.9)), ("wCDM", "hu_sawicki_de", (-0.8,), (0.5, 0.5)), ("wCDM", "hu_sawicki_de", (-1.3,), (0.3, 1.5))]
++worst = max(np.max(np.abs(_E2_at(p, m, tp, tf, False) / _E2_at(p, m, tp, tf, True) - 1)) for p, m, tp, tf in cases)
++report("hu_sawicki(_de): production rtol accuracy vs rtol=1e-9", worst < 1e-4,
++       f"rtol={HS['ode_options']['rtol']:g}: max|E2/E2_ref - 1| = {worst:.1e} over {len(cases)} cases (threshold 1e-4; ~1e-3 in lnL on Pantheon+CC+BAO+clu)")
++for p, m, tp, tf in cases[::3]:
++    t0 = time.perf_counter(); [make_background_builder(p, m, 0.05, 0.17, 10.0, OM)(tp, tf) for _ in range(5)]
++    report(f"{m}: cost per background {tf}", True, f"{(time.perf_counter() - t0) / 5 * 1e3:.0f} ms per solve", info=True)
++
+ print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+index 619574d..44dcfe5 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/fR.py
+@@ -95,8 +95,20 @@ LIMITATIONS
+   mode and needs ~1e3-1e6 right-hand-side evaluations (growing like (1 + z_init)^4.5 and as b -> 0), so the generic
+   5000-evaluation cap rejects most of the parameter space (measured: 11 of 15 tested (b, z_init) combinations failed).
+   BDF is even slower; Radau (L-stable, follows the attractor) needs ~2-5e3 evaluations (~50 ms), nearly independent of
+-  z_init, and agrees with the oscillation-resolving LSODA solution to <~4e-8.  Radau is therefore registered via
+-  "ode_options".
++  z_init, and agrees with the oscillation-resolving LSODA solution to <~4e-8 at rtol = 1e-6.  Radau is therefore
++  registered via "ode_options".
++  TOLERANCE.  The solve is ~96% of a likelihood evaluation (the Pantheon+ term costs ~2 ms), and its cost is set by rtol.
++  Measured on Pantheon+SH0ES + CC + BAO + clustering (30 points over the posterior region and the corners; 250 random
++  prior points for robustness; reference rtol = 1e-9):
++        rtol   ms/evaluation   max|E^2 error|   max|d lnL|
++        1e-6        38             8e-8            8e-6
++        1e-5        25             8e-7            1e-4
++        1e-4        17             2e-5            1e-3
++  (hu_sawicki_de: 74 / 38 / 24 ms per solve.)  No solve changed between success and failure at any of the three
++  tolerances.  rtol = 1e-4 is registered: lnL errors of 1e-3 are far below the O(0.1-1) differences an MCMC step is
++  sensitive to.  Set "rtol" in "ode_options" to 1e-6 for ~100x smaller errors at ~2.4-3x the cost.  Note that the IC
++  convergence number printed by main.py then shows the tolerance floor (~1e-5), not the IC dependence; it is
++  an informational diagnostic, and check_fR.py tests the IC dependence at a tight tolerance.
+   INITIAL CONDITIONS (a refinement).  The ODE is started on the model's own high-curvature attractor
+   u = x + Lambda/3 + delta1, x = Omega_m e^{-3N}, with delta1 (first order in g = 2 Lambda c/(R + c)) derived in
+   _ics_hu_sawicki, instead of the parameterisation's E^2.  The latter has Omega_Lambda = 1 - Omega_m, which equals
+@@ -322,7 +334,7 @@ FR_REGISTRY = {
+         "prior_func" : _prior_hu_sawicki,
+         "derivs"     : _derivs_hu_sawicki,
+         "ic_func"    : _ics_hu_sawicki,
+-        "ode_options": {"method": "Radau", "rtol": 1e-6, "max_rhs_evals": 20000},
++        "ode_options": {"method": "Radau", "rtol": 1e-4, "max_rhs_evals": 20000},   # rtol: see "hu_sawicki" in the docstring
+         "z_init_default": 10.0,                   # E^2(z) is independent of z_init to ~1e-7 for 10..80; larger only costs time
+     },
+     "R_log_R": {
