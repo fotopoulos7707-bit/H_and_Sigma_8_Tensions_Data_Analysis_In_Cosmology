@@ -1,0 +1,27 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : wowaCDM__R_lambda_R2__alpha=1e-09
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    67.5955 |                 0.7680 |                 0.9143
+$w_0$           |    -1.0461 |                 0.7297 |                 1.2682
+$w_a$           |     0.3146 |                 2.5450 |                 2.8823
+$\Lambda_{f(R)}$ |     1.9962 |                 0.1226 |                 0.1454
+----------------------------------------------------------
+Parameterisation : wowaCDM
+f(R) model       : R_lambda_R2  (f(R) = R - 2 Lambda + alpha R^2  (Starobinsky R^2 with a cosmological constant))
+f(R) pinned params: alpha = 1e-09  (NOT sampled)
+FR_Z_INIT        : 2.5
+Omega_m anchor   : 0.3  (gauge value, NOT sampled; alpha is in anchor units)
+Derived (H0 above is the true present-day value):
+  Omega_m (present, physical) = Omega_m/u(0): 0.3110 +0.0178 / -0.0130   (300 samples)
+  H0 (anchor, sets ICs) = H0/sqrt(u(0)): 68.7274 +1.0617 / -0.7068   (300 samples)
+Perturbative truncation error estimate at the posterior median (z <= 2.5): 1.3e-13  (rejected above 1e-03)
+  Scalaron-free attractor, 2nd order in alpha; the model is almost degenerate with LCDM for background data.
+==========================================================

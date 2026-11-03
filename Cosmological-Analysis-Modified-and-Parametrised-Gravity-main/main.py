@@ -21,9 +21,9 @@ from results_io import save_histogram_data, write_posterior_summary
 # ════════════════════════════════════════════════════════════════════════════
 # SWITCHBOARD CONFIGURATION — SWITCH SCENARIOS HERE
 # ════════════════════════════════════════════════════════════════════════════
-PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
+PARAMETERISATION = "wowaCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "hu_sawicki_de"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
