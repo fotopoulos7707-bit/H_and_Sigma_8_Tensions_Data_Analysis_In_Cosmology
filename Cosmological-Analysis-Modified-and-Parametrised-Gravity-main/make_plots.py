@@ -9,6 +9,8 @@ Choose which graphs to make from MCMC chains that are already on disk (no re-sam
     python make_plots.py --plots contour_vs_ref --reference wCDM --pair H0 w0     # any model as the reference
     python make_plots.py --plots comparison --no-show
     python make_plots.py --plots traces --walkers 64 --run-mode snia+cc+bao+clu
+    python make_plots.py --list --root /path/to/project
+    python make_plots.py --plots comparison --root /path/to/project --no-show
 
 Plots: corner, traces, potential, omega_components (one set per model);
        hist, box, violin, contour_vs_ref, contour_all, hubble (several models together).
@@ -107,14 +109,23 @@ def main():
     ap.add_argument("--reference", metavar="TAG", help="reference model for contour_vs_ref (default: LCDM if selected, else first)")
     ap.add_argument("--run-mode", help="dataset tag in the chain file names (default: main.RUN_MODE)")
     ap.add_argument("--walkers", type=int, help="walkers the chains were made with (default: main.N_WALKERS)")
+    ap.add_argument("--root", default=None, help="project directory containing chain_*.npy (also checks root/chains/; default: this script directory)")
+    ap.add_argument("--graphs-dir", default=None, help="directory for generated figures (default: <root>/graphs)")
     ap.add_argument("--bins", type=int, help="bins for the 1D histogram overlays (default 16)")
     ap.add_argument("--no-show", action="store_true", help="save the figures but do not open windows")
     ap.add_argument("--list", action="store_true", help="list plots and available chains, then exit")
     args = ap.parse_args()
 
+    if args.walkers is not None and args.walkers < 1:
+        ap.error("--walkers must be a positive integer")
+    if args.bins is not None and args.bins < 1:
+        ap.error("--bins must be a positive integer")
+
     overrides = {}
-    if args.walkers: overrides["n_walkers"] = args.walkers
-    if args.bins:    overrides["hist_bins"] = args.bins
+    if args.walkers is not None: overrides["n_walkers"] = args.walkers
+    if args.bins is not None:    overrides["hist_bins"] = args.bins
+    if args.root:                overrides["root"] = os.path.abspath(os.path.expanduser(args.root))
+    if args.graphs_dir:          overrides["graphs_dir"] = os.path.abspath(os.path.expanduser(args.graphs_dir))
     if args.no_show: overrides["show"] = False
     if args.params or PARAMS: overrides["params"] = tuple(args.params or PARAMS)
     if args.pair or PAIR:     overrides["pair"] = tuple(args.pair or PAIR)
