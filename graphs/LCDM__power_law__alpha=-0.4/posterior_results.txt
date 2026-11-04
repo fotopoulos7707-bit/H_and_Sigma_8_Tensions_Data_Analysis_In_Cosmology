@@ -1,0 +1,24 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : LCDM__power_law__alpha=-0.4
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    52.3586 |                 0.5796 |                 0.3682
+$n_{f(R)}$      |     0.5659 |                 0.0610 |                 0.0385
+----------------------------------------------------------
+Parameterisation : LCDM
+f(R) model       : power_law  (f(R) = R + alpha R^n)
+f(R) pinned params: alpha = -0.4  (NOT sampled)
+FR_Z_INIT        : 40.0
+Omega_m anchor   : 0.3  (gauge value, NOT sampled; alpha is in anchor units)
+Derived (H0 above is the true present-day value):
+  Omega_m (present, physical) = Omega_m/u(0): 0.6072 +0.0115 / -0.0145   (300 samples)
+  H0 (anchor, sets ICs) = H0/sqrt(u(0)): 74.5635 +1.0015 / -0.9224   (300 samples)
+IC convergence test: max|E2(z_init=40)/E2(z_init=80) - 1| = 3.18e-04 on z in [0, 2.4]
+==========================================================

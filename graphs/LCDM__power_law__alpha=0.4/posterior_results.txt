@@ -1,0 +1,26 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : LCDM__power_law__alpha=0.4
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    61.9465 |                 1.1666 |                 1.3817
+$n_{f(R)}$      |     1.4258 |                 0.0040 |                 0.0104
+----------------------------------------------------------
+Parameterisation : LCDM
+f(R) model       : power_law  (f(R) = R + alpha R^n)
+f(R) pinned params: alpha = 0.4  (NOT sampled)
+FR_Z_INIT        : 40.0
+Omega_m anchor   : 0.3  (gauge value, NOT sampled; alpha is in anchor units)
+Derived (H0 above is the true present-day value):
+  Omega_m (present, physical) = Omega_m/u(0): 0.0244 +0.0039 / -0.0031   (300 samples)
+  H0 (anchor, sets ICs) = H0/sqrt(u(0)): 17.6753 +1.0893 / -0.8417   (300 samples)
+IC convergence test: max|E2(z_init=40)/E2(z_init=80) - 1| = 1.84e-01 on z in [0, 2.4]
+  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary
+           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them.
+==========================================================
