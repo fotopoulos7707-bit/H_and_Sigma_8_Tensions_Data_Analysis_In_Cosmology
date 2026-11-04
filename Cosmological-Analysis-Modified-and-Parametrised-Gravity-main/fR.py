@@ -12,6 +12,8 @@ out symbolically in Modified_Gravity_Models/fR_friedmann.py:
     "R_lambda_R2" f = R - 2 Lambda + alpha R^2   free: Lambda, alpha  (not in fR_friedmann.py)
                  Solved NOT by the ODE but on the smooth (scalaron-free) attractor, in closed form
                  to second order in alpha -- see "R_lambda_R2" below.
+    "starobinsky" f = R + alpha R^2     free: alpha   (simple Starobinsky model: NO cosmological constant;
+                 the "R_lambda_R2" closed form with Lambda = 0 -- see "starobinsky" below)
     "hu_sawicki" f = R - 2 Lambda (1 - 1/(1 + (R/(Lambda b))^p)),  p = 1   free: Lambda, b
                  = R - 2 Lambda R/(R + Lambda b)   (Hu-Sawicki, n = 1).  ODE started on the model's own
                  high-curvature attractor and integrated with an implicit (Radau) method -- see "hu_sawicki" below.
@@ -82,6 +84,14 @@ LIMITATIONS
   (BAO, z = 2.36) is only ~0.6%, below the data errors: alpha is UNCONSTRAINED by background data
   (its posterior is the prior cut at ~9e-5), and the model is degenerate with LCDM (Lambda plays
   the role of Omega_m).
+* "starobinsky" (f = R + alpha R^2, NO Lambda).  Same scalaron-free attractor as "R_lambda_R2" evaluated at Lambda = 0:
+        u = x + (27/2) alpha x^2 - 729 alpha^2 x^3 + O(alpha^3),     x = Omega_m (1+z)^3   (anchor H0 = 1 units)
+  (verified symbolically: the tt residual of this form starts at O(alpha^3); the first-order form's starts at O(alpha^2)).
+  There is NO dark-energy component of any kind here: with alpha <= 1e-4 the R^2 term is a <~2% correction to
+  a matter-only (Einstein-de Sitter) expansion at z = 2.4 and vanishes at z = 0, so the model CANNOT produce late-time
+  acceleration (q0 ~ 0.5).  It is a minimal reference model, not a competitive dark-energy model; expect a very poor fit
+  (H0 pushed against its lower prior bound).  alpha is the only f(R) parameter; the natural companion is LCDM
+  (any other parameterisation contributes only Omega_m -- its w0, wa, ... are unused and stay prior-dominated).
 * "hu_sawicki" (f = R - 2 Lambda R/(R + c),  c = Lambda b;  the p = 1 case of
   f = R - 2 Lambda [1 - 1/(1 + (R/(Lambda b))^p)]).  Derivatives (verified symbolically):
         f_R   = 1 - 2 Lambda c/(R + c)^2,   f_RR = 4 Lambda c/(R + c)^3,   f_RRR = -12 Lambda c/(R + c)^4
@@ -281,6 +291,21 @@ def _background_R_lambda_R2(Omega_m, theta, z_max):
     return Background(E2, u0, Omega_m, None, err), None
 
 
+# ── "starobinsky": f = R + alpha R^2, no cosmological constant (= "R_lambda_R2" with Lambda = 0) ─────────────
+def _derivs_starobinsky(theta):
+    alpha, = theta
+    return _derivs_R_lambda_R2((0.0, alpha))
+
+def _prior_starobinsky(theta):
+    alpha, = theta
+    # f_RR = 2 alpha > 0 (stability); upper edge = alpha_R2 bound (the perturbative-error guard cuts in near ~9e-5)
+    return 0.0 if (_in(alpha, "alpha_R2") and alpha > 0.0) else -np.inf
+
+def _background_starobinsky(Omega_m, theta, z_max):
+    alpha, = theta
+    return _background_R_lambda_R2(Omega_m, (0.0, alpha), z_max)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # f(R) REGISTRY
 # ════════════════════════════════════════════════════════════════════════════
@@ -323,6 +348,17 @@ FR_REGISTRY = {
         "prior_func" : _prior_R_lambda_R2,
         "derivs"     : _derivs_R_lambda_R2,
         "analytic_background": _background_R_lambda_R2,   # used INSTEAD of the ODE
+        "z_init_default": 2.5,                            # = highest redshift of validity
+    },
+    "starobinsky": {
+        "description": "f(R) = R + alpha R^2  (Starobinsky R^2, NO cosmological constant)",
+        "param_names": ["alpha"],
+        "labels"     : [r"$\alpha_{f(R)}$"],
+        "p0_center"  : np.array([5e-5]),          # inside (0, 1e-4], ~5 sigma from both walls
+        "p0_scatter" : np.array([1e-5]),
+        "prior_func" : _prior_starobinsky,
+        "derivs"     : _derivs_starobinsky,
+        "analytic_background": _background_starobinsky,   # used INSTEAD of the ODE
         "z_init_default": 2.5,                            # = highest redshift of validity
     },
     "hu_sawicki": {

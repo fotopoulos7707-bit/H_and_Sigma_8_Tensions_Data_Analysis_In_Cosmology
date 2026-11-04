@@ -1,0 +1,231 @@
+================================================================================
+ H0 / sigma8 TENSIONS - COSMOLOGICAL MCMC PIPELINE: COMBINATIONS GUIDE
+================================================================================
+Folder: Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/
+Everything below was read from the code (run_config.py, parameterisations.py,
+fR.py, likelihood.py, main.py, data_loader.py).  If you change a prior or add a
+model, update this file.
+
+--------------------------------------------------------------------------------
+ 1. HOW A RUN IS DEFINED
+--------------------------------------------------------------------------------
+A run is one choice from each of three switches at the top of main.py:
+
+  PARAMETERISATION   background model (section 2)
+  FR_MODEL           gravity model (section 3); "GR" = no modification
+  USE_SNIA / USE_CC / USE_BAO / USE_CLUSTER   dataset toggles (section 6)
+
+plus FR_FIXED_PARAMS, FR_Z_INIT and FR_OMEGA_M_ANCHOR (f(R) runs only).
+
+Sampled vector (emcee):   [ H0, *parameterisation params, *f(R) params ]
+
+ * FR_MODEL = "GR":  the parameterisation IS the background, E^2(z) = H^2/H0^2.
+ * FR_MODEL != "GR": H(z) comes from the f(R) field equations with matter only
+   (or matter + the parameterisation's dark energy for "hu_sawicki_de").
+   The parameterisation then only supplies Omega_m (and, for power_law and
+   R_log_R, the initial conditions).
+ * In f(R) runs Omega_m is NOT sampled: it is degenerate with alpha, so it is
+   pinned at FR_OMEGA_M_ANCHOR (0.3).  The physical present-day matter fraction
+   Omega_m/u(0) is reported as a derived quantity.  H0 is always the true
+   present-day value (E^2(0) = 1).
+
+Output names:  run tag = "<param>" or "<param>__<fR>__<pinned>=<value>"
+  e.g. LCDM, wCDM__R_lambda_R2__alpha=1e-09, LCDM__starobinsky
+  chain_<tag>_<datasets>.npy      graphs/<tag>/...      (datasets e.g. snia+cc+bao+clu)
+
+--------------------------------------------------------------------------------
+ 2. PARAMETERISATIONS  (parameterisations.py)
+--------------------------------------------------------------------------------
+All priors are uniform with hard walls (strict inequalities).  H0: (50, 100).
+
+ name                      sampled besides H0        priors / notes
+ ------------------------  ------------------------  --------------------------
+ LCDM                      Om                        Om (0.05, 0.70)
+ wCDM                      Om, w0                    w0 (-3, 0)
+ wCDM_fixed_Omega_m        w0                        Om hard-wired to 0.3
+ CPL                       Om, w0, wa                wa (-5, 5)
+ wowaCDM                   Om, w0, wa                IDENTICAL to CPL (same E^2,
+                                                     same prior); only the start
+                                                     point differs
+ JBP                       Om, w0, wa                wa (-5, 5)
+ HDE                       Om, c                     c (0.1, 3); constant
+                                                     w_eff = -1/3 - 2/(3c),
+                                                     i.e. -7 ... -0.55
+ IDE                       Om, xi                    xi (-1, 1); see section 8
+ param_Hubble_fixed_delta  Om0, alpha                Om0 (0.05, 0.95),
+                                                     alpha (-2, 4); delta fixed
+                                                     (FIXED_DELTA = 0.05)
+ param_Hubble_fixed_alpha  Om0, delta                delta (-2, 2); alpha fixed
+                                                     (FIXED_ALPHA = 0.17)
+ Custom_Universal          Om0                       delta, alpha both fixed
+
+--------------------------------------------------------------------------------
+ 3. f(R) MODELS  (fR.py)
+--------------------------------------------------------------------------------
+Every modified model needs f_RR > 0 (stability); it is enforced in the prior.
+
+ FR_MODEL       f(R)                         free params / priors (closed
+                                             intervals unless stated)
+ -------------  ---------------------------  ----------------------------------
+ GR             f = R                        none (dark energy from the
+                                             parameterisation)
+ power_law      R + alpha R^n                alpha [-10, 10], n [0.1, 2],
+                                             n != 1; alpha*n*(n-1) > 0, i.e.
+                                             alpha < 0 for n < 1, alpha > 0
+                                             for n > 1
+ R_log_R        R (1 + alpha ln R)           alpha [0, 3] (alpha > 0)
+ R_lambda_R2    R - 2 Lambda + alpha R^2     Lambda [0, 20], alpha (0, 1e-4]
+ starobinsky    R + alpha R^2                alpha (0, 1e-4]   NO Lambda
+ hu_sawicki     R - 2 Lambda R/(R+Lambda b)  Lambda (0, 20], b (0, 2)   (p = 1)
+ hu_sawicki_de  hu_sawicki + the             same as hu_sawicki; Lambda is an
+                parameterisation's DE        EXTRA constant, needs <~ 0.3
+
+ FR_MODEL       how H(z) is obtained                 default FR_Z_INIT
+ -------------  -----------------------------------  ---------------------------
+ power_law      ODE (LSODA), ICs from parameterisation   40
+ R_log_R        ODE (LSODA), ICs from parameterisation   40
+ R_lambda_R2    closed form, 2nd order in alpha          2.5
+ starobinsky    closed form, 2nd order in alpha          2.5
+ hu_sawicki(_de) ODE (Radau), own attractor ICs          10
+
+ R_lambda_R2 / starobinsky: FR_Z_INIT is the highest redshift where the
+ expansion is trusted.  It must exceed the highest requested z (BAO 2.36, SNIa
+ grid 2.37); below ~2.4 the code raises an error.  Parameters are also rejected
+ when the estimated truncation error exceeds 1e-3 (alpha ~ 9e-5).
+
+ Runtime rejections (any ODE model): u <= 0, R <= 0, blow-up |u'/u| > 1e3,
+ too many right-hand-side evaluations (stiff), or u(0) outside (1e-2, 1e2).
+
+--------------------------------------------------------------------------------
+ 4. COMPATIBILITY MATRIX  (what run_config.py accepts)
+--------------------------------------------------------------------------------
+ OK = valid and meaningful
+ o  = valid, but the parameterisation's extra parameters (w0, wa, c) are unused
+      or negligible: they just add prior-dominated dimensions.  Use LCDM.
+ !! = valid, but results are unreliable (section 8)
+ ?? = valid, but a physics problem was found (section 8)
+ -- = rejected with a ValueError
+
+                           GR  power  R_log  R_lam  Staro  Hu-Saw  Hu-Saw
+                               _law   _R     _R2    binsky         _de
+ LCDM                      OK  OK     !!     OK     OK     OK      --
+ wCDM                      OK  o      !!     o      o      o       OK
+ wCDM_fixed_Omega_m        OK  o      !!     o      o      o       OK
+ CPL                       OK  o      !!     o      o      o       OK
+ wowaCDM                   OK  o      !!     o      o      o       OK
+ JBP                       OK  o      !!     o      o      o       OK
+ HDE                       OK  o      !!     o      o      o       OK
+ IDE                       ??  --     --     --     --     --      --
+ param_Hubble_fixed_delta  OK  --     --     --     --     --      --
+ param_Hubble_fixed_alpha  OK  --     --     --     --     --      --
+ Custom_Universal          OK  --     --     --     --     --      --
+
+ Rules enforced:
+  A. FR_MODEL = "GR": any of the 11 parameterisations.
+  B. Any modified model needs a parameterisation with a conserved-matter Om
+     (excludes IDE, param_Hubble_*, Custom_Universal) -> 7 remain.
+  C. hu_sawicki_de additionally rejects LCDM (a constant fluid duplicates
+     Lambda) -> 6 remain.
+  D. FR_FIXED_PARAMS names must exist for the chosen model; pinning n = 1 is
+     rejected; if all f(R) parameters are pinned the prior is checked at once.
+
+ Count: 11 + 5 x 7 + 6 = 52 valid combinations
+        (20 OK, 24 'o', 7 '!!', 1 '??').
+
+--------------------------------------------------------------------------------
+ 5. WHICH ONES TO ACTUALLY RUN
+--------------------------------------------------------------------------------
+ Background-only comparison (FR_MODEL = "GR"):
+   LCDM, wCDM, wCDM_fixed_Omega_m, CPL (or JBP), HDE, param_Hubble_*.
+   Skip wowaCDM (= CPL).  Do not trust IDE until section 8 is resolved.
+ Modified gravity with a cosmological constant:
+   LCDM + R_lambda_R2, LCDM + hu_sawicki, LCDM + power_law (0 < n < 1).
+ Modified gravity with a dark-energy parameterisation:
+   {wCDM, CPL, JBP, wowaCDM, HDE, wCDM_fixed_Omega_m} + hu_sawicki_de.
+ Minimal reference model (no dark energy at all):
+   LCDM + starobinsky (section 9).
+
+--------------------------------------------------------------------------------
+ 6. DATASETS
+--------------------------------------------------------------------------------
+ Any non-empty subset of the four toggles (15 combinations); with none enabled
+ main.py aborts.
+
+ dataset                       N      z range       likelihood
+ ----------------------------  -----  ------------  -------------------------
+ SNIa (Pantheon+SH0ES)         1701   0.001-2.26    full STAT+SYS covariance,
+                                                     constant offset M_B
+                                                     marginalised analytically
+ CC (cosmic chronometers)      31     0.07-1.97     diagonal errors only
+ BAO                           6      0.24-2.36     used as H(z) points
+ Clustering                    21     0.10-0.73     used as H(z) points
+
+ Consequences:
+  * SNIa carry NO information on H0 here: the marginalisation removes any
+    constant offset in mu, and H0 only enters mu as a constant.  A SNIa-only
+    run returns the prior U(50, 100) for H0.  In joint fits H0 is constrained
+    by CC + BAO + clustering only; SNIa act through Om and the shape
+    parameters.  (For Q_DMAP the SNIa-only chi2_min is still well defined, but
+    do not count H0 as a constrained parameter.)
+  * BAO alone (6 points) leaves 2 degrees of freedom for a 4-parameter model.
+  * Clustering alone stops at z = 0.73.
+
+--------------------------------------------------------------------------------
+ 7. TYPICAL SETTINGS
+--------------------------------------------------------------------------------
+ main.py switchboard examples:
+   PARAMETERISATION = "LCDM";  FR_MODEL = "GR"             (baseline)
+   PARAMETERISATION = "LCDM";  FR_MODEL = "R_lambda_R2";  FR_FIXED_PARAMS = {"alpha": 1e-9}
+   PARAMETERISATION = "wCDM";  FR_MODEL = "hu_sawicki_de"; FR_FIXED_PARAMS = {"b": 0.9}
+   PARAMETERISATION = "LCDM";  FR_MODEL = "starobinsky";  FR_FIXED_PARAMS = {}
+
+ Commands (inside the venv):
+   python check_fR.py          self-tests of the f(R) solvers (run after any edit)
+   python main.py              MCMC run for the current switchboard
+   python compare_posteriors.py / python make_plots.py   comparison plots
+   git apply patches/<name>.patch                         apply a patch
+
+--------------------------------------------------------------------------------
+ 8. KNOWN PROBLEMS  (found while reading the code; none are fixed here)
+--------------------------------------------------------------------------------
+ * IDE has no LCDM limit.  rho_de ~ 3/(3+xi)(1+z)^3 + xi/(3+xi)(1+z)^(-xi), so
+   xi = 0 gives E^2 = (1+z)^3 (matter only), and the walkers start at xi = 0.
+   Within xi in (-1, 1) the second term never exceeds ~1/3 of the total.
+ * R_log_R has no GR matter-era attractor: E^2(z) changes by 10-50 % with
+   FR_Z_INIT (fR.py docstring).  Do not trust its results.
+ * power_law with n > 1 is allowed by the prior, but the GR-like early matter
+   era that the initial conditions assume only exists for 0 < n < 1.
+ * R_log_R: alpha = 0 passes the (closed) prior but gives f_RR = 0.
+ * R_lambda_R2 and starobinsky: alpha is unconstrained by background data (its
+   posterior is the prior cut at ~9e-5); R_lambda_R2 is degenerate with LCDM.
+ * With R_lambda_R2 / hu_sawicki / starobinsky the parameterisation's w0, wa, c
+   are unused: e.g. wCDM__R_lambda_R2 reports w0 spread over most of its prior.
+ * CPL, JBP, HDE, IDE clamp E^2 with max(E^2, 1e-9) instead of rejecting
+   E^2 <= 0; bad regions are only penalised through a huge chi2.
+ * wowaCDM duplicates CPL; HDE is wCDM reparametrised (w_eff set by c).
+ * CC uses diagonal errors (no off-diagonal covariance).
+
+--------------------------------------------------------------------------------
+ 9. STAROBINSKY MODEL  (FR_MODEL = "starobinsky")
+--------------------------------------------------------------------------------
+ f(R) = R + alpha R^2, no cosmological constant, one free parameter alpha.
+ It is the R_lambda_R2 closed form at Lambda = 0:
+
+     u(z) = x + (27/2) alpha x^2 - 729 alpha^2 x^3 + O(alpha^3),
+     x = Om (1+z)^3,   E^2(z) = u(z)/u(0)     (anchor units, Om = 0.3)
+
+ The tt equation was checked symbolically: the residual vanishes through
+ O(alpha^2).  Prior: alpha in (0, 1e-4] (f_RR = 2 alpha > 0).
+
+ What to expect: there is no dark energy of any kind.  For alpha <= 9e-5 the
+ R^2 term changes E^2 by at most 1.3 % relative to (1+z)^3 for z <= 2.4, so the
+ expansion is matter-dominated at all times (q0 ~ 0.5, no acceleration).
+ Best fit on snia+cc+bao+clu (optimiser, not MCMC):
+
+     LCDM (GR):          H0 = 67.38, Om = 0.3153, chi2 = 1797.3
+     LCDM + starobinsky: H0 -> 50 (prior wall), chi2 = 2925.3
+     Delta chi2 = +1128 for N = 1759 data points
+
+ The model is a minimal reference, not a competitive late-time model.  Use
+ LCDM as the companion; any other parameterisation only supplies Om.
+================================================================================

@@ -1,0 +1,24 @@
+==========================================================
+MCMC POSTERIOR STATISTICAL RESULTS
+Model Frame    : LCDM__starobinsky
+Active Datasets: snia+cc+bao+clu
+  SNIa (Pantheon+SH0ES) : ON
+  CC   (Cosmic Chron.)  : ON
+  BAO                   : ON
+  Clustering            : ON
+==========================================================
+Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
+----------------------------------------------------------
+$H_0$           |    50.1119 |                 3.2029 |                 0.0918
+$\alpha_{f(R)}$ |  3.149e-05 |              3.841e-05 |              2.678e-05
+----------------------------------------------------------
+Parameterisation : LCDM
+f(R) model       : starobinsky  (f(R) = R + alpha R^2  (Starobinsky R^2, NO cosmological constant))
+FR_Z_INIT        : 2.5
+Omega_m anchor   : 0.3  (gauge value, NOT sampled; alpha is in anchor units)
+Derived (H0 above is the true present-day value):
+  Omega_m (present, physical) = Omega_m/u(0): 0.9999 +0.0001 / -0.0002   (300 samples)
+  H0 (anchor, sets ICs) = H0/sqrt(u(0)): 91.4746 +4.8028 / -0.1657   (300 samples)
+Perturbative truncation error estimate at the posterior median (z <= 2.5): 1.2e-04  (rejected above 1e-03)
+  Scalaron-free attractor, 2nd order in alpha; the model is almost degenerate with LCDM for background data.
+==========================================================

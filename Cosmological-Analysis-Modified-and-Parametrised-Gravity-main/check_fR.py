@@ -18,6 +18,9 @@ Self-tests for the f(R) background solver (fR.py).  Run:  python check_fR.py
 8. hu_sawicki_de (parameterisation dark energy on top of Lambda in f(R)): b -> 0, w0 = -1 equals the analytic LCDM with
    Omega_Lambda = Lambda/3 + (1 - Omega_m); E^2 is independent of FR_Z_INIT; w0 now changes E^2 (it does not for
    hu_sawicki); kappa p of the f(R) side equals the fluid's kappa p_DE (Bianchi identity); LCDM is rejected.
+10. starobinsky (f = R + alpha R^2, no Lambda): the closed form solves the tt equation symbolically through O(alpha^2);
+   it equals R_lambda_R2 at Lambda = 0; alpha -> 0 is exactly matter-only (E^2 = (1+z)^3, no acceleration);
+   the prior edges (alpha = 0, 1e-4, > 1e-4, < 0) behave; run_config accepts LCDM and rejects IDE.
 """
 import numpy as np
 
@@ -307,5 +310,56 @@ report("hu_sawicki(_de): production rtol accuracy vs rtol=1e-9", worst < 1e-4,
 for p, m, tp, tf in cases[::3]:
     t0 = time.perf_counter(); [make_background_builder(p, m, 0.05, 0.17, 10.0, OM)(tp, tf) for _ in range(5)]
     report(f"{m}: cost per background {tf}", True, f"{(time.perf_counter() - t0) / 5 * 1e3:.0f} ms per solve", info=True)
+
+# ── 10. starobinsky ───────────────────────────────────────────────────────────────
+ST = fR.FR_REGISTRY["starobinsky"]
+zs10 = np.linspace(0.0, 2.4, 25)
+bSt = make_background_builder("LCDM", "starobinsky", 0.05, 0.17, 2.5, OM)
+
+# 10a. closed form u = x + 27/2 alpha x^2 - 729 alpha^2 x^3 solves the tt equation: residual vanishes through O(alpha^2)
+try:
+    import sympy as sp
+    Ns, Oms, als = sp.symbols("N Omega_m alpha", positive=True)
+    xs = Oms * sp.exp(-3 * Ns)
+    def _resid(u):
+        R = 3 * sp.diff(u, Ns) + 12 * u
+        F = 1 + 2 * als * R
+        return sp.expand(3 * F * u + (R + als * R**2 - R * F) / 2 + 3 * u * 2 * als * sp.diff(R, Ns) - 3 * xs)
+    u2 = xs + sp.Rational(27, 2) * als * xs**2 - 729 * als**2 * xs**3
+    ser = sp.series(_resid(u2), als, 0, 4).removeO()
+    low = [sp.simplify(ser.coeff(als, k)) for k in range(3)]
+    report("starobinsky: tt residual of the closed form", all(c == 0 for c in low),
+           "coefficients of alpha^0, alpha^1, alpha^2 all vanish (first non-zero term is O(alpha^3))")
+except ImportError:
+    report("starobinsky: tt residual of the closed form", True, "sympy not installed, skipped", info=True)
+
+# 10b. identical to R_lambda_R2 at Lambda = 0
+bR2_0 = make_background_builder("LCDM", "R_lambda_R2", 0.05, 0.17, 2.5, OM)
+a_t = 5e-5
+d = np.max(np.abs(bSt((), (a_t,)).E2(zs10) / bR2_0((), (0.0, a_t)).E2(zs10) - 1))
+report("starobinsky == R_lambda_R2 at Lambda = 0", d < 1e-14, f"max|E2 ratio - 1| = {d:.1e}")
+
+# 10c. alpha -> 0 is matter-only: E^2 = (1+z)^3
+d = np.max(np.abs(bSt((), (1e-12,)).E2(zs10) / (1.0 + zs10) ** 3 - 1))
+report("starobinsky: alpha -> 0 is Einstein-de Sitter", d < 1e-9, f"max|E2/(1+z)^3 - 1| = {d:.1e}  (no acceleration, no dark energy)")
+bgS = bSt((), (9e-5,))
+report("starobinsky: size of the R^2 effect at the prior edge", True,
+       f"alpha = 9e-5: max|E2/(1+z)^3 - 1| over z <= 2.4 = {np.max(np.abs(bgS.E2(zs10) / (1 + zs10) ** 3 - 1)):.2e}", info=True)
+
+# 10d. prior edges
+pri = ST["prior_func"]
+edges = {"alpha=0": 0.0, "alpha=1e-4": 1e-4, "alpha=1.1e-4": 1.1e-4, "alpha=-1e-5": -1e-5, "alpha=5e-5": 5e-5}
+res = {k: np.isfinite(pri((v,))) for k, v in edges.items()}
+report("starobinsky: prior edges", res == {"alpha=0": False, "alpha=1e-4": True, "alpha=1.1e-4": False, "alpha=-1e-5": False, "alpha=5e-5": True},
+       f"accepted: {[k for k, v in res.items() if v]}")
+
+# 10e. run_config rules
+cfg = get_run_config("LCDM", "starobinsky")
+try:
+    get_run_config("IDE", "starobinsky"); ide_rejected = False
+except ValueError:
+    ide_rejected = True
+report("starobinsky: run_config", cfg["tag"] == "LCDM__starobinsky" and cfg["n_param_theta"] == 0 and ide_rejected
+       and len(cfg["labels"]) == 2, f"tag={cfg['tag']}, sampled = {cfg['labels']}, IDE rejected = {ide_rejected}")
 
 print("\nALL CHECKS PASSED" if ok_all else "\nSOME CHECKS FAILED")
