@@ -1,0 +1,11 @@
+# Python cache and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# MCMC chains: keep local; do not commit/push large sampled arrays
+chain_*.npy
+**/chain_*.npy
+
+# Generated figures and run outputs
