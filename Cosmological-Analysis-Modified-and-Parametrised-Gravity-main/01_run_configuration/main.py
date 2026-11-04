@@ -1,4 +1,15 @@
 # main.py
+# Resolve the project root so scripts work after being moved into workflow folders.
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).resolve()
+while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
+    _PROJECT_ROOT = _PROJECT_ROOT.parent
+if str(_PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_PROJECT_ROOT))
+from project_paths import configure_import_paths
+PROJECT_ROOT = configure_import_paths()
+
 import os
 # One BLAS/OpenMP thread per process.  Must be set BEFORE numpy is imported: with a process pool
 # (N_PROCESSES > 1) multi-threaded BLAS in every worker would oversubscribe the CPU.
@@ -202,13 +213,15 @@ if __name__ == "__main__":
     # ════════════════════════════════════════════════════════════════════════════
     # DYNAMIC DIRECTORY SETUP FOR INDIVIDUAL MODELS
     # ════════════════════════════════════════════════════════════════════════════
-    base_graph_dir = "graphs"
+    base_graph_dir = os.path.join(PROJECT_ROOT, "graphs")
     model_output_dir = os.path.join(base_graph_dir, RUN_TAG)
     os.makedirs(model_output_dir, exist_ok=True)
     print(f"\nTarget output path successfully mapped to: {model_output_dir}")
 
     flat_chain = sampler.get_chain(flat=True)
-    np.save(f"chain_{RUN_TAG}_{RUN_MODE}.npy", flat_chain)
+    chain_dir = os.path.join(PROJECT_ROOT, "chains")
+    os.makedirs(chain_dir, exist_ok=True)
+    np.save(os.path.join(chain_dir, f"chain_{RUN_TAG}_{RUN_MODE}.npy"), flat_chain)
 
     # ════════════════════════════════════════════════════════════════════════════
     # EXPORT NUMERICAL RESULTS TO TEXT FILE & PRINT POSTERIOR SUMMARY

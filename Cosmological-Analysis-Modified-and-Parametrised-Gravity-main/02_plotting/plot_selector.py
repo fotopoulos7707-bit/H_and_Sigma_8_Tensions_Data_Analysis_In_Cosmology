@@ -13,6 +13,18 @@ Used by
 
 This module must NOT import main.py (main imports this); settings travel in a PlotContext.
 """
+
+# Resolve the project root so scripts work after being moved into workflow folders.
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).resolve()
+while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
+    _PROJECT_ROOT = _PROJECT_ROOT.parent
+if str(_PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_PROJECT_ROOT))
+from project_paths import configure_import_paths
+PROJECT_ROOT = configure_import_paths()
+
 import os
 import re
 import traceback
@@ -26,7 +38,7 @@ import comparison_plots as cp
 from comparison_plots import PlotSkipped
 from run_config import get_run_config, split_tag
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = str(PROJECT_ROOT)
 CUSTOM_HUBBLE_MODELS = ("Custom_Universal", "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha")
 
 

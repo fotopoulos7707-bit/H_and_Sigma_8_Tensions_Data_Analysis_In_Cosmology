@@ -180,10 +180,11 @@ Every modified model needs f_RR > 0 (stability); it is enforced in the prior.
    PARAMETERISATION = "LCDM";  FR_MODEL = "starobinsky";  FR_FIXED_PARAMS = {}
 
  Commands (inside the venv):
-   python check_fR.py          self-tests of the f(R) solvers (run after any edit)
-   python main.py              MCMC run for the current switchboard
-   python compare_posteriors.py / python make_plots.py   comparison plots
-   git apply patches/<name>.patch                         apply a patch
+   python 04_diagnostics/check_fR.py       self-tests of the f(R) solvers
+   python 01_run_configuration/main.py      MCMC run for the current switchboard
+   python 02_plotting/make_plots.py --list  list chains and plotting options
+   python 02_plotting/make_plots.py --plots comparison --no-show
+   git apply patches/<name>.patch           apply a patch
 
 --------------------------------------------------------------------------------
  8. KNOWN PROBLEMS  (found while reading the code; none are fixed here)
@@ -307,3 +308,49 @@ Notes:
     plot_walk_traces.py entry points remain available. For new workflows,
     prefer make_plots.py so plot selection, model selection, and run mode are
     controlled consistently in one place.
+
+
+--------------------------------------------------------------------------------
+11. PROJECT FOLDER LAYOUT
+--------------------------------------------------------------------------------
+Scripts are grouped by workflow. Run commands from the repository root
+(the directory containing this readme). Each script adds the project folders
+to Python's import path, so sibling modules remain importable after the move.
+
+  01_run_configuration/
+      main.py                 Edit the model, f(R) choice, datasets and MCMC settings
+      parameterisations.py    Background cosmological parameterisations
+      fR.py                   Modified-gravity models and background solvers
+      run_config.py           Run tags, sampled parameters and compatibility
+
+  02_plotting/
+      make_plots.py           Recommended plotting entry point
+      plot_selector.py        Plot registry and dispatcher
+      plotting.py             Per-model figures
+      comparison_plots.py     Multi-model figures
+      compare_posteriors.py, plot_hubble_diagram.py, plot_walk_traces.py
+                              Legacy plotting entry points
+
+  03_data_and_likelihood/
+      data_loader.py, likelihood.py, datasets/
+                              Observational data and likelihood evaluation
+
+  04_diagnostics/
+      check_convergence.py    Chain convergence diagnostic
+      check_fR.py             f(R) solver self-tests
+
+  05_results_and_reconstruction/
+      results_io.py           Numerical result exports
+      Modified_Gravity_Models/
+                              Standalone Friedmann / f(R) reconstruction scripts
+
+Generated figures go to graphs/. MCMC chains are saved under chains/ and
+are intended to remain local; chain_*.npy is ignored by Git. Existing chain
+files at the repository root are still discoverable by the plotting tools.
+
+Examples from the repository root:
+  python 01_run_configuration/main.py
+  python 02_plotting/make_plots.py --list
+  python 02_plotting/make_plots.py --plots corner traces --models LCDM
+  python 02_plotting/make_plots.py --plots hist --models LCDM wCDM --params H0
+  python 04_diagnostics/check_fR.py

@@ -146,6 +146,18 @@ LIMITATIONS
       Its results depend on the arbitrary starting redshift and must not be trusted.
   main.py prints this convergence test (ic_sensitivity) for every f(R) run.
 """
+
+# Resolve the project root so scripts work after being moved into workflow folders.
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).resolve()
+while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
+    _PROJECT_ROOT = _PROJECT_ROOT.parent
+if str(_PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_PROJECT_ROOT))
+from project_paths import configure_import_paths
+PROJECT_ROOT = configure_import_paths()
+
 import numpy as np
 from scipy.integrate import solve_ivp
 
