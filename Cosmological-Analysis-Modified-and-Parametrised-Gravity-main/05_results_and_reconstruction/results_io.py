@@ -3,6 +3,18 @@
 Numerical output: posterior summary text file and 1D histogram data export.
 No plotting or sampling logic lives here, only reporting.
 """
+
+# Resolve the project root so scripts work after being moved into workflow folders.
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).resolve()
+while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
+    _PROJECT_ROOT = _PROJECT_ROOT.parent
+if str(_PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_PROJECT_ROOT))
+from project_paths import configure_import_paths
+PROJECT_ROOT = configure_import_paths()
+
 import os
 import numpy as np
 
