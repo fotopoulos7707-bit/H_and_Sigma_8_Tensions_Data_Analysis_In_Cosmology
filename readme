@@ -229,3 +229,81 @@ Every modified model needs f_RR > 0 (stability); it is enforced in the prior.
  The model is a minimal reference, not a competitive late-time model.  Use
  LCDM as the companion; any other parameterisation only supplies Om.
 ================================================================================
+
+
+--------------------------------------------------------------------------------
+10. PLOTTING SAVED MCMC CHAINS
+--------------------------------------------------------------------------------
+Plotting uses saved chain_*.npy files: it does NOT run MCMC again. The plotting
+scripts live in Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/.
+Run the commands below from that directory with the project virtual environment
+active (or replace "python" with the path to its Python executable).
+
+First, see the available plot types, saved chains, dataset/run-mode tags, and
+the parameters sampled by each chain:
+
+  python make_plots.py --list
+
+If no options are given, make_plots.py opens an interactive menu in a terminal.
+For reproducible/non-interactive use, specify plots on the command line:
+
+  # One model: posterior corner plot and walker traces
+  python make_plots.py --plots corner traces --models LCDM
+
+  # Compare several models with 1D posterior histograms
+  python make_plots.py --plots hist --models LCDM wCDM --params H0 Omega_m
+
+  # Compare contours for H0 and w0, using wCDM as the reference
+  python make_plots.py --plots contour_vs_ref --models LCDM wCDM --pair H0 w0 --reference wCDM
+
+  # All comparison plot types, without opening GUI windows
+  python make_plots.py --plots comparison --no-show
+
+  # Select the dataset tag explicitly and set the walker count for traces
+  python make_plots.py --plots traces --run-mode snia+cc+bao+clu --walkers 64
+
+Plot keys and groups:
+  corner, traces, potential, omega_components   per-model plots
+  hist, box, violin, contour_vs_ref, contour_all, hubble   model comparisons
+  --plots model       all per-model plot types
+  --plots comparison  all comparison plot types
+  --plots all         every plot type
+
+Useful options:
+  --list                   list available chains, run modes, and plot types
+  --models TAG [TAG ...]   choose chain/run tags; omit to use all matching chains
+  --run-mode TAG           choose the dataset suffix in chain filenames
+  --params NAME [NAME ...] parameters for hist/box/violin (default: H0 matter)
+  --pair X Y               contour axes (default: H0 matter)
+  --reference TAG           reference chain for contour_vs_ref
+  --walkers N               walker count used when sampling (trace plots only)
+  --bins N                  number of bins for posterior histogram overlays
+  --no-show                save figures without opening interactive windows
+  --root PATH              project directory containing chains, or a directory
+                           whose chains/ subdirectory contains them
+  --graphs-dir PATH        output directory for generated figures
+
+Output locations:
+  Per-model figures are saved under graphs/<run-tag>/.
+  Multi-model figures are saved under graphs/Model_Comparisons/.
+  --graphs-dir changes the figure output directory; --root changes the project
+  root used to discover chains and, by default, the graphs/ output location.
+  Figures are saved as PDF. Plot failures and model/plot incompatibilities are
+  summarized in the terminal; a plot that does not apply to a model is skipped.
+
+Notes:
+  * Run tags must match the tags printed by --list exactly, including any f(R)
+    model and fixed-parameter suffixes.
+  * The run mode must match the suffix in the chain filename. If no chains are
+    found, use --list to see available modes and pass the correct --run-mode.
+  * f(R) chains have Omega_m anchored rather than sampled. Prefer parameters
+    that are actually sampled by every model being compared (for example H0,
+    alpha_fR, or Lambda_fR). Parameters absent from a model are omitted from
+    that comparison.
+  * Walker traces require the same --walkers value used to create the chain.
+    The flattened .npy chain does not store this value; an incorrect count can
+    scramble the apparent walker traces even if the length is divisible by it.
+  * The legacy compare_posteriors.py, plot_hubble_diagram.py, and
+    plot_walk_traces.py entry points remain available. For new workflows,
+    prefer make_plots.py so plot selection, model selection, and run mode are
+    controlled consistently in one place.
