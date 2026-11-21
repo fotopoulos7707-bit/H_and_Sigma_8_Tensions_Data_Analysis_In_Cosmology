@@ -28,6 +28,7 @@ from scipy.linalg import cho_solve
 import data_loader as dl
 import parameterisations as P
 import fR
+import growth
 
 
 def mu_theory(z_arr, E2_of_z, H0, n_grid=600):
@@ -137,12 +138,39 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
     return build
 
 
+def make_growth_evaluator(parameterisation, fr_model, fr_z_init, omega_m_anchor=0.3, fr_fixed=None,
+                          k=growth.K_GROWTH_DEFAULT, z_start=growth.Z_GROWTH_INIT):
+    """
+    Returns evaluate(bg, theta_p, theta_fR, fs8_data) -> growth.GrowthFit (or None if the background is unphysical).
+    Shared by the likelihood and by the derived sigma_8 / S_8 summary in main.py.  theta_p / theta_fR are the SAMPLED
+    parameters, exactly as for make_background_builder.  Needs a parameterisation with conserved matter.
+    """
+    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
+    omega_m_func = pcfg["omega_m_func"]
+    if omega_m_func is None:
+        ok = [kname for kname, v in P.PARAMETERISATION_REGISTRY.items() if v["omega_m_func"] is not None]
+        raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter Omega_m, so the growth equation "
+                         f"(which needs rho_m ~ a^-3) is not defined for it. Compatible: {ok}")
+    derivs_of = _get_fr_config(fr_model)["derivs"]
+    expand, _ = make_theta_expander(parameterisation, fr_model, omega_m_anchor)
+    expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
+    z_bg_max = None if derivs_of is None else fr_z_init
+
+    def evaluate(bg, theta_p, theta_fr, fs8_data):
+        om_bg = bg.omega_m if bg.omega_m is not None else omega_m_func(expand(theta_p))
+        derivs = None if derivs_of is None else derivs_of(expand_fr(theta_fr))
+        return growth.fs8_fit(bg, om_bg / bg.u0, derivs, fs8_data, k=k, z_start=z_start, z_bg_max=z_bg_max)
+    return evaluate
+
+
 def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
-                       omega_m_anchor=0.3, fr_fixed=None):
+                       omega_m_anchor=0.3, fr_fixed=None, growth_k=None):
     """
     Builds a log_posterior(params, ...) closure bound to a specific
     (parameterisation, f(R) model) pair, so main.py doesn't need to pass them
     through emcee's args on every call.
+    growth_k: None -> no growth term.  A number (h/Mpc) -> the fs8 likelihood of growth.py is added whenever the
+    trailing argument fs8_data of log_posterior is not None (sigma_8,0 is marginalised analytically: sampled vector unchanged).
     """
     pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
     fcfg = _get_fr_config(fr_model)
@@ -152,8 +180,10 @@ def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_
     expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
     build = make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
                                     omega_m_anchor, fr_fixed)
+    evaluate_growth = (None if growth_k is None else
+                       make_growth_evaluator(parameterisation, fr_model, fr_z_init, omega_m_anchor, fr_fixed, k=growth_k))
 
-    def log_posterior(params, z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets):
+    def log_posterior(params, z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets, fs8_data=None):
         H0 = params[0]
         theta_p = tuple(params[1:1 + n_p])
         theta_fr = tuple(params[1 + n_p:])
@@ -186,6 +216,15 @@ def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_
             if not (np.all(np.isfinite(E2)) and np.all(E2 > 0.0)):
                 return -np.inf
             ll += -0.5 * np.sum(((H_obs - H0 * np.sqrt(E2)) / sigma_H) ** 2)
+
+        # Growth rate f*sigma_8(z): linear growth ODE + AP rescaling, sigma_8,0 marginalised (growth.py)
+        if fs8_data is not None:
+            if evaluate_growth is None:
+                raise ValueError("fs8_data was passed but the log-posterior was built with growth_k=None")
+            fit = evaluate_growth(bg, theta_p, theta_fr, fs8_data)
+            if fit is None:
+                return -np.inf
+            ll += fit.lnL
 
         return lp + ll
 

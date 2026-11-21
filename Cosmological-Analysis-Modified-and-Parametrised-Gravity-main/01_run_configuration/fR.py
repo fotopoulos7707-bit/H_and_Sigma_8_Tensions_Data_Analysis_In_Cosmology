@@ -300,7 +300,13 @@ def _background_R_lambda_R2(Omega_m, theta, z_max):
             raise ValueError(f"E2(z) requested at z={z.max():.3g} > FR_Z_INIT={z_max}; raise FR_Z_INIT in main.py.")
         out = u(z, 2) / u0
         return out if z.ndim else float(out)
-    return Background(E2, u0, Omega_m, None, err), None
+
+    def dudN(z):
+        # exact N-derivative of the same truncated u(z) (x' = -3x, N = ln a, anchor units):
+        #   u' = -3x - 81 alpha x^2 + alpha^2 (2916 Lambda x^2 + 6561 x^3)
+        x = Omega_m * (1.0 + np.asarray(z, dtype=float)) ** 3
+        return -3.0 * x - 81.0 * alpha * x**2 + alpha**2 * (2916.0 * Lam * x**2 + 6561.0 * x**3)
+    return Background(E2, u0, Omega_m, None, err, dudN), None
 
 
 # ── "starobinsky": f = R + alpha R^2, no cosmological constant (= "R_lambda_R2" with Lambda = 0) ─────────────
@@ -465,13 +471,16 @@ class Background:
     """E2(z): vectorised E^2(z) = H^2/H0^2 with E^2(0)=1.  u0: u(N=0) in anchor units.
     omega_m: anchor Omega_m used for the integration (None for GR backgrounds).
     sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR / perturbative models).
-    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models)."""
-    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None):
+    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models).
+    dudN: perturbative models only: z -> du/dN = d(H^2/H0_anchor^2)/d ln a in anchor units (used by growth.py, which needs
+          R = 3 u' + 12 u and H'/H; ODE models provide u' through `sol`, GR backgrounds by finite differences)."""
+    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None, dudN=None):
         self.E2 = E2
         self.u0 = u0
         self.omega_m = omega_m
         self.sol = sol
         self.truncation_error = truncation_error
+        self.dudN = dudN
 
 
 MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter space blow past this

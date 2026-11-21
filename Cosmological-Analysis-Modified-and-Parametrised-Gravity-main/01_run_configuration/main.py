@@ -23,8 +23,9 @@ import emcee
 
 import data_loader as dl
 import fR
+import growth
 from run_config import get_run_config
-from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
+from likelihood import (make_log_posterior, make_background_builder, make_theta_expander, make_growth_evaluator,
                         suggest_alpha_start, suggest_n_start)
 from plot_selector import PlotContext, resolve_keys, run_plots
 from results_io import save_histogram_data, write_posterior_summary
@@ -34,7 +35,7 @@ from results_io import save_histogram_data, write_posterior_summary
 # ════════════════════════════════════════════════════════════════════════════
 PARAMETERISATION = "LCDM"   # Options: "LCDM", "wCDM", "wCDM_fixed_Omega_m", "wowaCDM", "CPL", "JBP", "HDE", "IDE",
                          #          "param_Hubble_fixed_delta", "param_Hubble_fixed_alpha", "Custom_Universal"
-FR_MODEL         = "starobinsky"  # f(R) gravity model (fR.py).  Options:
+FR_MODEL         = "GR"  # f(R) gravity model (fR.py).  Options:
                          #   "GR"         f = R                   -> the parameterisation IS the background (old behaviour)
                          #   "power_law"  f = R + alpha R^n       -> f(R) ODE gives H(z); parameterisation sets ICs + Omega_m
                          #   "R_log_R"    f = R (1 + alpha ln R)  -> same
@@ -60,6 +61,10 @@ USE_SNIA    = True   # Pantheon+SH0ES Type Ia Supernovae (full covariance, margi
 USE_CC      = True   # Cosmic Chronometers H(z)
 USE_BAO     = True   # Baryon Acoustic Oscillations H(z)
 USE_CLUSTER = True   # Galaxy Clustering H(z)
+USE_FS8     = True  # Growth rate f*sigma_8(z), Gold-2017 (18 pts, growth.py).  Adds the linear growth equation; sigma_8,0 is
+                         # marginalised analytically (sampled vector unchanged) and reported as a DERIVED quantity.  Needs a
+                         # parameterisation with conserved matter.  See readme section 12 for the assumptions.
+FS8_K       = 0.1    # h/Mpc: the single comoving scale at which the scale-dependent f(R) G_eff is evaluated (modelling choice!)
 # ────────────────────────────────────────────────────────────────────────────
 
 # ── Graphs made at the end of the run ───────────────────────────────────────
@@ -81,6 +86,7 @@ if USE_SNIA:    _active.append("snia")
 if USE_CC:      _active.append("cc")
 if USE_BAO:     _active.append("bao")
 if USE_CLUSTER: _active.append("clu")
+if USE_FS8:     _active.append("fs8")
 if not _active:
     raise ValueError("All datasets are disabled. Enable at least one USE_* flag.")
 RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
@@ -102,7 +108,7 @@ RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subf
 n_param_theta = model_config["n_param_theta"]
 
 log_posterior = make_log_posterior(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
-                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, growth_k=FS8_K if USE_FS8 else None)
 
 # Picklable, module-level target for the process pool (log_posterior is a closure, which cannot be
 # pickled).  Workers are forked after _PARALLEL_ARGS is set, so they inherit the loaded datasets.
@@ -127,6 +133,8 @@ if __name__ == "__main__":
     if USE_CC:      hz_datasets.append(dl.load_cc_data())
     if USE_BAO:     hz_datasets.append(dl.load_bao_data())
     if USE_CLUSTER: hz_datasets.append(dl.load_clustering_data())
+
+    fs8_data = dl.load_fs8_data() if USE_FS8 else None
 
     ndim = len(model_config["labels"])
     if RANDOM_SEED is not None:
@@ -161,7 +169,7 @@ if __name__ == "__main__":
 
     # Fail early with a useful message if the start point has zero probability (e.g. pinned f(R)
     # parameters that admit no valid expansion history), instead of emcee's generic error.
-    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
+    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets, fs8_data)
     n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
     if n_bad:
         # Say WHY, using the first bad walker (prior/stability, or the f(R) solver's own reason).
@@ -269,6 +277,14 @@ if __name__ == "__main__":
             if sens > 1e-3:
                 extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
                                 "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
+    if USE_FS8:
+        print("\nDeriving sigma_8,0 and S_8 from the growth data for a subset of samples...")
+        _build = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                         FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+        _eval = make_growth_evaluator(PARAMETERISATION, FR_MODEL, FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, k=FS8_K)
+        fs8_lines, _ = growth.derived_sigma8_summary(flat_chain, _build, _eval, fs8_data, n_param_theta)
+        extra_lines += [f"Growth (f sigma_8, Gold-2017; linear quasi-static growth at k = {FS8_K:g} h/Mpc, z_start = "
+                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in fs8_lines]
     write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
                              USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
                              extra_lines=extra_lines)

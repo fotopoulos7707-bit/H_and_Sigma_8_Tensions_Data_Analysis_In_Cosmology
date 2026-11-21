@@ -1,0 +1,35 @@
+# f*sigma_8(z) growth-rate data: the "Gold-2017" compilation, Table III of
+#   S. Nesseris, G. Pantazis, L. Perivolaropoulos, Phys. Rev. D 96, 023542 (2017), arXiv:1703.10538.
+# (18 independent RSD / peculiar-velocity measurements; values copied from that table.)
+#
+# columns:  z   fs8   sigma_fs8   Omega_m_fid   block   survey
+#   Omega_m_fid : matter density of the flat LCDM fiducial cosmology the survey used to convert redshifts to distances
+#                 (the Notes column of that table; rows without a note share the value of the row above, same survey).
+#                 It enters ONLY through the Alcock-Paczynski rescaling  ratio(z) = E(z) chi(z) / (E_fid(z) chi_fid(z)).
+#   block       : 0 = independent point.  1 = WiggleZ: the three rows share the covariance of eq. (2.8) of the paper,
+#                 C = 1e-3 * [[6.400, 2.570, 0.000], [2.570, 3.969, 2.540], [0.000, 2.540, 5.184]]  (set in growth.py).
+#
+# CAVEATS (do not skip):
+#   * This is a 2017 compilation.  It does not contain the final eBOSS / DESI RSD results.
+#   * Points were selected by the compilation's authors to limit double counting; cross-survey correlations are still
+#     neglected (only WiggleZ is correlated).
+#   * Three points sit at z = 0.02 (peculiar-velocity surveys) and are not independent of the local-flow model.
+#   * The AP correction is the first-order rescaling of the paper, not a re-analysis of the clustering.
+0.02   0.428   0.0465  0.300     0   6dFGS+SnIa
+0.02   0.398   0.065   0.300     0   SnIa+IRAS
+0.02   0.314   0.048   0.266     0   2MASS
+0.10   0.370   0.130   0.300     0   SDSS-veloc
+0.15   0.490   0.145   0.310     0   SDSS-MGS
+0.17   0.510   0.060   0.300     0   2dFGRS
+0.18   0.360   0.090   0.270     0   GAMA
+0.38   0.440   0.060   0.270     0   GAMA
+0.25   0.3512  0.0583  0.250     0   SDSS-LRG-200
+0.37   0.4602  0.0378  0.250     0   SDSS-LRG-200
+0.32   0.384   0.095   0.274     0   BOSS-LOWZ
+0.59   0.488   0.060   0.307115  0   SDSS-CMASS
+0.44   0.413   0.080   0.270     1   WiggleZ
+0.60   0.390   0.063   0.270     1   WiggleZ
+0.73   0.437   0.072   0.270     1   WiggleZ
+0.60   0.550   0.120   0.300     0   Vipers-PDR2
+0.86   0.400   0.110   0.300     0   Vipers-PDR2
+1.40   0.482   0.116   0.270     0   FastSound

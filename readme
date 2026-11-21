@@ -332,12 +332,13 @@ to Python's import path, so sibling modules remain importable after the move.
                               Legacy plotting entry points
 
   03_data_and_likelihood/
-      data_loader.py, likelihood.py, datasets/
+      data_loader.py, likelihood.py, growth.py, datasets/
                               Observational data and likelihood evaluation
 
   04_diagnostics/
       check_convergence.py    Chain convergence diagnostic
       check_fR.py             f(R) solver self-tests
+      check_growth.py         growth module self-tests (exact LCDM solution, EdS, AP ratio, published chi^2)
 
   05_results_and_reconstruction/
       results_io.py           Numerical result exports
@@ -354,3 +355,45 @@ Examples from the repository root:
   python 02_plotting/make_plots.py --plots corner traces --models LCDM
   python 02_plotting/make_plots.py --plots hist --models LCDM wCDM --params H0
   python 04_diagnostics/check_fR.py
+
+
+================================================================================
+12. GROWTH OF STRUCTURE: f*sigma_8(z)   (growth.py, USE_FS8)
+================================================================================
+Until this section the pipeline used background data only (SNIa, CC, BAO and the "clustering" file, which holds H(z)
+points).  It therefore could not say anything about sigma_8 or S_8.  Set USE_FS8 = True in main.py to add the growth rate.
+
+What is added
+  * Data: 18 f*sigma_8 points, the "Gold-2017" compilation (Nesseris, Pantazis & Perivolaropoulos, PRD 96, 023542),
+    datasets/fs8_gold2017.txt, with the WiggleZ 3x3 covariance and each survey's fiducial Omega_m.
+  * Theory: delta'' + (2 + H'/H) delta' - (3/2) Omega_m(N) (G_eff/G) delta = 0, N = ln a, with
+      GR + parameterisation : G_eff = G
+      f(R)                  : G_eff/G = (1/F)(1 + 4q)/(1 + 3q),  F = f_R,  q = (k/a)^2 f_RR / F
+    q is evaluated at the single scale FS8_K (default 0.1 h/Mpc).  RK4 in ln a, slow-roll growing-mode start.
+  * Observable: f sigma_8 = sigma_8,0 delta'(z)/delta(0), rescaled by the Alcock-Paczynski ratio E chi / (E_fid chi_fid).
+  * sigma_8,0 is NOT sampled: it enters linearly and is marginalised analytically with a flat prior (same trick as M_B).
+    The sampled vector and every plotting / comparison script are unchanged.  The posterior of sigma_8,0 and of
+    S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) is reported in posterior_results.txt (subset of 300 samples).
+  * The run tag gains "+fs8": chain_<tag>_snia+cc+bao+clu+fs8.npy.
+
+Valid combinations
+  * Any parameterisation with conserved matter (LCDM, wCDM, wCDM_fixed_Omega_m, wowaCDM, CPL, JBP, HDE) with FR_MODEL = "GR"
+    or any f(R) model.  IDE, param_Hubble_* and Custom_Universal are rejected (rho_m is not ~ a^-3).
+  * Growth starts at z = min(10, FR_Z_INIT).  The closed-form models (R_lambda_R2, starobinsky) only exist up to FR_Z_INIT = 2.5,
+    so they start there (about 0.2 % error in f at z < 1.5, check_growth.py test 7).  The data reach z = 1.4, so
+    FR_Z_INIT must stay above that.
+
+Limits you must keep in mind when quoting results
+  1. sigma_8,0 comes from the fs8 data alone.  There is no primordial amplitude or CMB transfer function here, so it is not
+     a model prediction and cannot be compared to Planck as a prediction-vs-measurement test of the model, only as an
+     independent growth-data estimate under that model's background and G_eff.
+  2. f(R) results depend on FS8_K.  This is a modelling choice (quasi-static, single scale), not a measured quantity.
+     Run several values before drawing any conclusion about the modified-gravity parameters.
+  3. Dark-energy parameterisations are treated as smooth (no perturbations).
+  4. The AP correction is the first-order rescaling of the compilation paper.  Cross-survey correlations, apart from WiggleZ,
+     are neglected, and the compilation is from 2017 (no final eBOSS / DESI RSD).
+  5. "starobinsky" (no Lambda) cannot accelerate; its background already fits badly (see section 8), so its growth fit is
+     not a meaningful test of f(R) gravity.
+  6. Validation: python 04_diagnostics/check_growth.py.  It checks the exact LCDM hypergeometric solution, Einstein-de Sitter,
+     the constant-G_eff power law, the GR limit of the f(R) code path, RK4 convergence, the analytic marginalisation, and it
+     reproduces the published chi^2 values 22.8 (Planck15 LCDM) and 11.8 (best-fit LCDM) of the compilation paper.

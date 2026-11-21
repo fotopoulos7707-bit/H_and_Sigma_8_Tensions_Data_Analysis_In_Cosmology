@@ -1,0 +1,805 @@
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/fR.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/fR.py
+index 16d57ec..7346580 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/fR.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/fR.py
+@@ -300,7 +300,13 @@ def _background_R_lambda_R2(Omega_m, theta, z_max):
+             raise ValueError(f"E2(z) requested at z={z.max():.3g} > FR_Z_INIT={z_max}; raise FR_Z_INIT in main.py.")
+         out = u(z, 2) / u0
+         return out if z.ndim else float(out)
+-    return Background(E2, u0, Omega_m, None, err), None
++
++    def dudN(z):
++        # exact N-derivative of the same truncated u(z) (x' = -3x, N = ln a, anchor units):
++        #   u' = -3x - 81 alpha x^2 + alpha^2 (2916 Lambda x^2 + 6561 x^3)
++        x = Omega_m * (1.0 + np.asarray(z, dtype=float)) ** 3
++        return -3.0 * x - 81.0 * alpha * x**2 + alpha**2 * (2916.0 * Lam * x**2 + 6561.0 * x**3)
++    return Background(E2, u0, Omega_m, None, err, dudN), None
+ 
+ 
+ # ── "starobinsky": f = R + alpha R^2, no cosmological constant (= "R_lambda_R2" with Lambda = 0) ─────────────
+@@ -465,13 +471,16 @@ class Background:
+     """E2(z): vectorised E^2(z) = H^2/H0^2 with E^2(0)=1.  u0: u(N=0) in anchor units.
+     omega_m: anchor Omega_m used for the integration (None for GR backgrounds).
+     sol: scipy dense solution y(N) = (u, u') in anchor units (None for GR / perturbative models).
+-    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models)."""
+-    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None):
++    truncation_error: perturbative models only: estimated relative error of E^2 (None for ODE models).
++    dudN: perturbative models only: z -> du/dN = d(H^2/H0_anchor^2)/d ln a in anchor units (used by growth.py, which needs
++          R = 3 u' + 12 u and H'/H; ODE models provide u' through `sol`, GR backgrounds by finite differences)."""
++    def __init__(self, E2, u0=1.0, omega_m=None, sol=None, truncation_error=None, dudN=None):
+         self.E2 = E2
+         self.u0 = u0
+         self.omega_m = omega_m
+         self.sol = sol
+         self.truncation_error = truncation_error
++        self.dudN = dudN
+ 
+ 
+ MAX_RHS_EVALS = 5000       # typical solve: ~300-600; stiff corners of parameter space blow past this
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
+index 6a54216..6a972e4 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
+@@ -23,8 +23,9 @@ import emcee
+ 
+ import data_loader as dl
+ import fR
++import growth
+ from run_config import get_run_config
+-from likelihood import (make_log_posterior, make_background_builder, make_theta_expander,
++from likelihood import (make_log_posterior, make_background_builder, make_theta_expander, make_growth_evaluator,
+                         suggest_alpha_start, suggest_n_start)
+ from plot_selector import PlotContext, resolve_keys, run_plots
+ from results_io import save_histogram_data, write_posterior_summary
+@@ -60,6 +61,10 @@ USE_SNIA    = True   # Pantheon+SH0ES Type Ia Supernovae (full covariance, margi
+ USE_CC      = True   # Cosmic Chronometers H(z)
+ USE_BAO     = True   # Baryon Acoustic Oscillations H(z)
+ USE_CLUSTER = True   # Galaxy Clustering H(z)
++USE_FS8     = False  # Growth rate f*sigma_8(z), Gold-2017 (18 pts, growth.py).  Adds the linear growth equation; sigma_8,0 is
++                         # marginalised analytically (sampled vector unchanged) and reported as a DERIVED quantity.  Needs a
++                         # parameterisation with conserved matter.  See readme section 12 for the assumptions.
++FS8_K       = 0.1    # h/Mpc: the single comoving scale at which the scale-dependent f(R) G_eff is evaluated (modelling choice!)
+ # ────────────────────────────────────────────────────────────────────────────
+ 
+ # ── Graphs made at the end of the run ───────────────────────────────────────
+@@ -81,6 +86,7 @@ if USE_SNIA:    _active.append("snia")
+ if USE_CC:      _active.append("cc")
+ if USE_BAO:     _active.append("bao")
+ if USE_CLUSTER: _active.append("clu")
++if USE_FS8:     _active.append("fs8")
+ if not _active:
+     raise ValueError("All datasets are disabled. Enable at least one USE_* flag.")
+ RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
+@@ -102,7 +108,7 @@ RUN_TAG = model_config["tag"]            # names the chain file and graphs/ subf
+ n_param_theta = model_config["n_param_theta"]
+ 
+ log_posterior = make_log_posterior(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+-                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
++                                 FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, growth_k=FS8_K if USE_FS8 else None)
+ 
+ # Picklable, module-level target for the process pool (log_posterior is a closure, which cannot be
+ # pickled).  Workers are forked after _PARALLEL_ARGS is set, so they inherit the loaded datasets.
+@@ -128,6 +134,8 @@ if __name__ == "__main__":
+     if USE_BAO:     hz_datasets.append(dl.load_bao_data())
+     if USE_CLUSTER: hz_datasets.append(dl.load_clustering_data())
+ 
++    fs8_data = dl.load_fs8_data() if USE_FS8 else None
++
+     ndim = len(model_config["labels"])
+     if RANDOM_SEED is not None:
+         np.random.seed(RANDOM_SEED)
+@@ -161,7 +169,7 @@ if __name__ == "__main__":
+ 
+     # Fail early with a useful message if the start point has zero probability (e.g. pinned f(R)
+     # parameters that admit no valid expansion history), instead of emcee's generic error.
+-    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets)
++    _args = (z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets, fs8_data)
+     n_bad = sum(not np.isfinite(log_posterior(w, *_args)) for w in p0)
+     if n_bad:
+         # Say WHY, using the first bad walker (prior/stability, or the f(R) solver's own reason).
+@@ -269,6 +277,14 @@ if __name__ == "__main__":
+             if sens > 1e-3:
+                 extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
+                                 "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
++    if USE_FS8:
++        print("\nDeriving sigma_8,0 and S_8 from the growth data for a subset of samples...")
++        _build = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
++                                         FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
++        _eval = make_growth_evaluator(PARAMETERISATION, FR_MODEL, FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, k=FS8_K)
++        fs8_lines, _ = growth.derived_sigma8_summary(flat_chain, _build, _eval, fs8_data, n_param_theta)
++        extra_lines += [f"Growth (f sigma_8, Gold-2017; linear quasi-static growth at k = {FS8_K:g} h/Mpc, z_start = "
++                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in fs8_lines]
+     write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
+                              USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
+                              extra_lines=extra_lines)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/data_loader.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/data_loader.py
+index f1760e2..f35a91c 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/data_loader.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/data_loader.py
+@@ -31,6 +31,7 @@ DATA_DIR = SCRIPT_DIR
+ CC_FILE  = os.path.join(DATA_DIR , "datasets/cc_data.txt")
+ BAO_FILE = os.path.join(DATA_DIR ,"datasets/bao_data.txt")
+ CLU_FILE = os.path.join(DATA_DIR ,"datasets/clustering_data.txt")
++FS8_FILE = os.path.join(DATA_DIR ,"datasets/fs8_gold2017.txt")
+ BAO_KEEP_INDICES = [0, 1, 2, 3, 4, 5]  # Deduplication
+ 
+ def load_pantheon_data():
+@@ -67,4 +68,21 @@ def _load_hz_file(filepath, keep_indices=None):
+ 
+ def load_cc_data(): return _load_hz_file(CC_FILE)
+ def load_bao_data(): return _load_hz_file(BAO_FILE, keep_indices=BAO_KEEP_INDICES)
+-def load_clustering_data(): return _load_hz_file(CLU_FILE)
+\ No newline at end of file
++def load_clustering_data(): return _load_hz_file(CLU_FILE)
++
++def load_fs8_data(filepath=FS8_FILE):
++    """
++    f*sigma_8(z) growth-rate data (Gold-2017, see the file header).  Returns a growth.FS8Data with the covariance
++    (WiggleZ block correlated) and the fiducial-cosmology quantities for the Alcock-Paczynski rescaling.
++    """
++    import growth
++    if not os.path.isfile(filepath):
++        raise FileNotFoundError(f"File not found: {filepath}")
++    raw = np.genfromtxt(filepath, comments='#', dtype=None, encoding=None)
++    z   = np.array([r[0] for r in raw], dtype=float)
++    fs8 = np.array([r[1] for r in raw], dtype=float)
++    sig = np.array([r[2] for r in raw], dtype=float)
++    om  = np.array([r[3] for r in raw], dtype=float)
++    blk = np.array([r[4] for r in raw], dtype=int)
++    names = [str(r[5]) for r in raw]
++    return growth.build_fs8_data(z, fs8, sig, om, blk, names)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/datasets/fs8_gold2017.txt b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/datasets/fs8_gold2017.txt
+new file mode 100644
+index 0000000..c63ae24
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/datasets/fs8_gold2017.txt
+@@ -0,0 +1,35 @@
++# f*sigma_8(z) growth-rate data: the "Gold-2017" compilation, Table III of
++#   S. Nesseris, G. Pantazis, L. Perivolaropoulos, Phys. Rev. D 96, 023542 (2017), arXiv:1703.10538.
++# (18 independent RSD / peculiar-velocity measurements; values copied from that table.)
++#
++# columns:  z   fs8   sigma_fs8   Omega_m_fid   block   survey
++#   Omega_m_fid : matter density of the flat LCDM fiducial cosmology the survey used to convert redshifts to distances
++#                 (the Notes column of that table; rows without a note share the value of the row above, same survey).
++#                 It enters ONLY through the Alcock-Paczynski rescaling  ratio(z) = E(z) chi(z) / (E_fid(z) chi_fid(z)).
++#   block       : 0 = independent point.  1 = WiggleZ: the three rows share the covariance of eq. (2.8) of the paper,
++#                 C = 1e-3 * [[6.400, 2.570, 0.000], [2.570, 3.969, 2.540], [0.000, 2.540, 5.184]]  (set in growth.py).
++#
++# CAVEATS (do not skip):
++#   * This is a 2017 compilation.  It does not contain the final eBOSS / DESI RSD results.
++#   * Points were selected by the compilation's authors to limit double counting; cross-survey correlations are still
++#     neglected (only WiggleZ is correlated).
++#   * Three points sit at z = 0.02 (peculiar-velocity surveys) and are not independent of the local-flow model.
++#   * The AP correction is the first-order rescaling of the paper, not a re-analysis of the clustering.
++0.02   0.428   0.0465  0.300     0   6dFGS+SnIa
++0.02   0.398   0.065   0.300     0   SnIa+IRAS
++0.02   0.314   0.048   0.266     0   2MASS
++0.10   0.370   0.130   0.300     0   SDSS-veloc
++0.15   0.490   0.145   0.310     0   SDSS-MGS
++0.17   0.510   0.060   0.300     0   2dFGRS
++0.18   0.360   0.090   0.270     0   GAMA
++0.38   0.440   0.060   0.270     0   GAMA
++0.25   0.3512  0.0583  0.250     0   SDSS-LRG-200
++0.37   0.4602  0.0378  0.250     0   SDSS-LRG-200
++0.32   0.384   0.095   0.274     0   BOSS-LOWZ
++0.59   0.488   0.060   0.307115  0   SDSS-CMASS
++0.44   0.413   0.080   0.270     1   WiggleZ
++0.60   0.390   0.063   0.270     1   WiggleZ
++0.73   0.437   0.072   0.270     1   WiggleZ
++0.60   0.550   0.120   0.300     0   Vipers-PDR2
++0.86   0.400   0.110   0.300     0   Vipers-PDR2
++1.40   0.482   0.116   0.270     0   FastSound
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py
+new file mode 100644
+index 0000000..da71121
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py
+@@ -0,0 +1,302 @@
++# growth.py
++"""
++Linear growth of matter perturbations and the f*sigma_8(z) likelihood.
++
++WHAT THIS MODULE DOES
++---------------------
++Given a background (fR.Background: E^2(z), and for f(R) the curvature R(z)) it integrates the sub-horizon
++(quasi-static) linear growth equation for the matter contrast delta, builds the observable
++
++    f sigma_8 (z) = sigma_8,0 * delta'(z) / delta(0)          (' = d/dN,  N = ln a)
++
++and compares it with RSD growth-rate data.  Nothing here changes the background likelihood.
++
++EQUATIONS (derived in the thesis notes; N = ln a, ' = d/dN, units: anchor H0 for f(R) backgrounds)
++---------------------------------------------------------------------------------------------------
++    delta'' + (2 + H'/H) delta' - (3/2) Omega_m(N) (G_eff/G) delta = 0
++
++    H'/H        = u'/(2u),                 u = H^2 / H0_anchor^2     (anchor units; GR backgrounds: u = E^2)
++    Omega_m(N)  = kappa rho_m / (3 H^2) = Omega_m,phys e^{-3N} / E^2(N),   Omega_m,phys = Omega_m,anchor / u(0)
++
++    GR + (smooth) dark energy :  G_eff / G = 1
++    f(R) (quasi-static, Tsujikawa 2007; De Felice & Tsujikawa 2010):
++        G_eff / G = (1/F) (1 + 4 q) / (1 + 3 q),      F = f_R(R),     q = (k / a)^2 f_RR(R) / F
++        R = 3 u' + 12 u   (anchor H0^2 units, same convention as fR.py)
++    q is evaluated at ONE comoving scale k (default 0.1 h/Mpc).  With k in h/Mpc and H0_anchor = H0 / sqrt(u(0)):
++        q = ( c k sqrt(u(0)) e^{-N} / 100 )^2 f_RR / F,        c = 299792.458 km/s     (H0 cancels)
++    For f_RR = 0 (Lambda CDM) q = 0 and G_eff = G/F = G, so the GR growth equation is recovered exactly.
++
++INITIAL CONDITIONS
++    f = delta'/delta obeys the Riccati equation  f' = -f^2 - A f + B,  A = 2 + H'/H,  B = (3/2) Omega_m G_eff/G.
++    At z_start: f = f0 - f0'/(2 f0 + A), with f0 the positive root of f0^2 + A f0 - B = 0 (the local power law delta = a^p;
++    p = 1 in a matter era with GR, p = 1.186 if G_eff = 4/3 G) and f0' its N-derivative (slow-roll, first order).
++    The residual error is a decaying mode ~ a^(-3/2) relative to the growing one; it is measured in check_growth.py.
++
++AMPLITUDE sigma_8,0 IS MARGINALISED ANALYTICALLY
++    The model is linear in sigma_8,0:  fs8_model,i = sigma_8,0 * g_i,   g_i = ratio(z_i) * delta'(z_i)/delta(0).
++    With a flat prior on sigma_8,0 and data covariance C:
++        A  = g^T C^-1 g,     Bd = g^T C^-1 d,      chi2_min = d^T C^-1 d - Bd^2 / A
++        ln L = -chi2_min / 2 - (1/2) ln A + const         (the ln A term depends on the model, so it is kept)
++        sigma_8,0 | theta ~ Normal(Bd/A, 1/A)
++    This is the same device the pipeline already uses for the SNIa offset M_B, and it keeps the sampled vector unchanged.
++    CONSEQUENCE: sigma_8,0 is fixed by the fs8 data alone.  There is NO CMB/primordial normalisation here, so the
++    derived sigma_8 is a growth-data estimate, not a prediction of the model.
++
++ALCOCK-PACZYNSKI RESCALING (Nesseris et al. 2017, their eq. 2.5-2.6)
++    The surveys assumed a flat LCDM fiducial (Omega_m,fid).  The prediction is rescaled by
++        ratio(z) = E(z) chi(z) / ( E_fid(z) chi_fid(z) ),   chi(z) = int_0^z dz'/E(z')   (H0 cancels)
++    This is first order and typically a ~1-3 % effect.
++
++ASSUMPTIONS / LIMITS (also in readme section 12)
++    * Quasi-static, sub-horizon, linear.  Needs k >> aH.  For f(R) the scalaron mass sets the scale of the modification,
++      so the result depends on the chosen k (FS8_K).  This is a modelling choice, not a measured quantity.
++    * Dark energy parameterisations (w0, wa, ...) are treated as smooth (no clustering).
++    * Matter must be conserved: parameterisations with omega_m_func = None (IDE, param_Hubble_*, Custom_Universal) are rejected.
++    * Background must be valid down to the redshift where growth starts: z_start = min(Z_GROWTH_INIT, FR_Z_INIT).
++      Closed-form models (R_lambda_R2, starobinsky) only exist up to FR_Z_INIT = 2.5, so growth starts there and carries
++      a small initial-condition error (see check_growth.py).
++"""
++
++# Resolve the project root so scripts work after being moved into workflow folders.
++import sys as _sys
++from pathlib import Path as _Path
++_PROJECT_ROOT = _Path(__file__).resolve()
++while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
++    _PROJECT_ROOT = _PROJECT_ROOT.parent
++if str(_PROJECT_ROOT) not in _sys.path:
++    _sys.path.insert(0, str(_PROJECT_ROOT))
++from project_paths import configure_import_paths
++PROJECT_ROOT = configure_import_paths()
++
++from collections import namedtuple
++
++import numpy as np
++from scipy.integrate import quad
++from scipy.interpolate import CubicHermiteSpline
++
++C_LIGHT_KMS = 299792.458
++
++Z_GROWTH_INIT = 10.0        # redshift where the growing-mode initial condition is imposed (capped by the background's range)
++K_GROWTH_DEFAULT = 0.1      # h/Mpc, single comoving scale used for the scale-dependent f(R) G_eff
++N_STEP = 0.01               # RK4 step in ln a (error ~ N_STEP^4; tested against DOP853 in check_growth.py)
++
++# WiggleZ 3x3 covariance, eq. (2.8) of Nesseris, Pantazis & Perivolaropoulos (2017)
++WIGGLEZ_COV = 1e-3 * np.array([[6.400, 2.570, 0.000],
++                               [2.570, 3.969, 2.540],
++                               [0.000, 2.540, 5.184]])
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# DATA CONTAINER
++# ════════════════════════════════════════════════════════════════════════════
++class FS8Data:
++    """z, fs8, covariance and its inverse, plus the fiducial-cosmology quantities needed for the AP rescaling."""
++    def __init__(self, z, fs8, cov, om_fid, names=None):
++        self.z = np.asarray(z, dtype=float)
++        self.fs8 = np.asarray(fs8, dtype=float)
++        self.cov = np.asarray(cov, dtype=float)
++        self.om_fid = np.asarray(om_fid, dtype=float)
++        self.names = list(names) if names is not None else [""] * len(self.z)
++        self.cinv = np.linalg.inv(self.cov)
++        self.chi2_0 = float(self.fs8 @ self.cinv @ self.fs8)          # d^T C^-1 d
++        # fiducial flat LCDM: E_fid(z) and chi_fid(z) = int_0^z dz'/E_fid  (units of c/H0)
++        self.e_fid = np.sqrt(self.om_fid * (1.0 + self.z) ** 3 + 1.0 - self.om_fid)
++        self.chi_fid = np.array([quad(lambda x, om=om: 1.0 / np.sqrt(om * (1.0 + x) ** 3 + 1.0 - om), 0.0, zi,
++                                      epsabs=1e-13, epsrel=1e-13)[0] for zi, om in zip(self.z, self.om_fid)])
++
++
++def build_fs8_data(z, fs8, sigma, om_fid, block, names=None):
++    """Diagonal covariance, except rows with block == 1 (WiggleZ) which share WIGGLEZ_COV (their order = file order)."""
++    z, fs8, sigma = (np.asarray(a, dtype=float) for a in (z, fs8, sigma))
++    block = np.asarray(block, dtype=int)
++    cov = np.diag(sigma ** 2)
++    idx = np.where(block == 1)[0]
++    if len(idx):
++        if len(idx) != 3:
++            raise ValueError(f"block == 1 (WiggleZ) must have exactly 3 rows, found {len(idx)}")
++        cov[np.ix_(idx, idx)] = WIGGLEZ_COV
++    return FS8Data(z, fs8, cov, om_fid, names)
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# GROWTH ODE
++# ════════════════════════════════════════════════════════════════════════════
++def _background_u(bg, N):
++    """(u, u') = (H^2/H0_anchor^2, du/dN) at the e-folds N (array), anchor units.  u(0) = bg.u0."""
++    z = np.expm1(-N)
++    if bg.sol is not None:                                   # ODE f(R) backgrounds: dense solution y = (u, u')
++        y = bg.sol.sol(N)
++        return np.asarray(y[0]), np.asarray(y[1])
++    if getattr(bg, "dudN", None) is not None:                # closed-form f(R) backgrounds
++        return bg.u0 * np.asarray(bg.E2(z), dtype=float), np.asarray(bg.dudN(z), dtype=float)
++    h = 1e-3                                                 # GR + parameterisation: u = E^2, 4th-order central difference in N
++    E2 = lambda n: np.asarray(bg.E2(np.expm1(-n)), dtype=float)
++    u = E2(N)
++    uN = (-E2(N + 2.0 * h) + 8.0 * E2(N + h) - 8.0 * E2(N - h) + E2(N - 2.0 * h)) / (12.0 * h)   # error ~ h^4 (~1e-12)
++    return u, uN
++
++
++def growth_coefficients(bg, omega_m_phys, derivs, k, N):
++    """
++    A(N) = 2 + H'/H  and  B(N) = (3/2) Omega_m(N) G_eff/G on the grid N.  None if the background is unphysical.
++    derivs = (f, f_R, f_RR, f_RRR) of the f(R) model (fR.py), or None for GR + parameterisation.
++    """
++    u, uN = _background_u(bg, N)
++    if not (np.all(np.isfinite(u)) and np.all(u > 0.0) and np.all(np.isfinite(uN))):
++        return None
++    A = 2.0 + uN / (2.0 * u)
++    omega_m_N = omega_m_phys * np.exp(-3.0 * N) * bg.u0 / u          # kappa rho_m / (3 H^2)
++    if derivs is None:
++        geff = 1.0
++    else:
++        R = 3.0 * uN + 12.0 * u
++        if not (np.all(np.isfinite(R)) and np.all(R > 0.0)):
++            return None
++        F = derivs[1](R)
++        fRR = derivs[2](R)
++        if not (np.all(np.isfinite(F)) and np.all(F > 0.0) and np.all(np.isfinite(fRR))):
++            return None
++        q = (C_LIGHT_KMS * k * np.sqrt(bg.u0) * np.exp(-N) / 100.0) ** 2 * fRR / F
++        geff = (1.0 / F) * (1.0 + 4.0 * q) / (1.0 + 3.0 * q)
++    B = 1.5 * omega_m_N * geff
++    return A, B
++
++
++def solve_growth(N, A, B):
++    """
++    RK4 for  y1' = y2,  y2' = -A y2 + B y1  on the fine grid N (length 2n+1: nodes at even indices, midpoints at odd).
++    Initial condition: slow-roll growing mode (local power law + first-order correction, see below), delta(N_i) = 1.
++    Returns (N_nodes, delta, delta', delta'') on the n+1 nodes.
++    """
++    n = (len(N) - 1) // 2
++    h = (N[-1] - N[0]) / n
++    Al, Bl = A.tolist(), B.tolist()
++    # f = delta'/delta obeys the Riccati equation  f' = -f^2 - A f + B.  Slow-roll: f0 = positive root of f0^2 + A f0 - B = 0
++    # (the local power law delta = a^p), corrected to first order, f = f0 - f0'/(2 f0 + A), with f0' from the first nodes.
++    # The correction removes most of the decaying mode excited by a start at finite z (check_growth.py, tests 1 and 7).
++    root = np.sqrt(Al[0] ** 2 + 4.0 * Bl[0])
++    f0 = 0.5 * (-Al[0] + root)
++    h2 = 2.0 * h                                              # spacing of the nodes
++    dA = (-3.0 * Al[0] + 4.0 * Al[2] - Al[4]) / (2.0 * h2)    # one-sided 3-point derivatives wrt N
++    dB = (-3.0 * Bl[0] + 4.0 * Bl[2] - Bl[4]) / (2.0 * h2)
++    f0_N = 0.5 * (-dA + (Al[0] * dA + 2.0 * dB) / root)
++    p = f0 - f0_N / (2.0 * f0 + Al[0])
++    y1, y2 = 1.0, float(p)
++    d, dp = [y1], [y2]
++    for j in range(n):
++        a0, am, a1 = Al[2 * j], Al[2 * j + 1], Al[2 * j + 2]
++        b0, bm, b1 = Bl[2 * j], Bl[2 * j + 1], Bl[2 * j + 2]
++        k1a, k1b = y2, -a0 * y2 + b0 * y1
++        t1, t2 = y1 + 0.5 * h * k1a, y2 + 0.5 * h * k1b
++        k2a, k2b = t2, -am * t2 + bm * t1
++        t1, t2 = y1 + 0.5 * h * k2a, y2 + 0.5 * h * k2b
++        k3a, k3b = t2, -am * t2 + bm * t1
++        t1, t2 = y1 + h * k3a, y2 + h * k3b
++        k4a, k4b = t2, -a1 * t2 + b1 * t1
++        y1 += h / 6.0 * (k1a + 2.0 * k2a + 2.0 * k3a + k4a)
++        y2 += h / 6.0 * (k1b + 2.0 * k2b + 2.0 * k3b + k4b)
++        d.append(y1)
++        dp.append(y2)
++    d, dp = np.array(d), np.array(dp)
++    N_nodes = N[0::2]
++    ddp = -A[0::2] * dp + B[0::2] * d
++    return N_nodes, d, dp, ddp
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# AP RESCALING + FS8 FIT
++# ════════════════════════════════════════════════════════════════════════════
++_GL_X, _GL_W = np.polynomial.legendre.leggauss(24)
++
++
++def ap_ratio(bg, data):
++    """
++    ratio(z_i) = E chi / (E_fid chi_fid) for the model background (None if E^2 is not positive).
++    chi(z_i) = int_0^{z_i} dz/E by 24-point Gauss-Legendre on each [0, z_i] (relative error << 1e-10 for smooth E).
++    """
++    zq = 0.5 * data.z[:, None] * (_GL_X[None, :] + 1.0)                 # (n_data, 24) nodes
++    E2q = np.asarray(bg.E2(zq.ravel()), dtype=float).reshape(zq.shape)
++    if not (np.all(np.isfinite(E2q)) and np.all(E2q > 0.0)):
++        return None
++    chi = 0.5 * data.z * (_GL_W[None, :] / np.sqrt(E2q)).sum(axis=1)
++    E = np.sqrt(np.asarray(bg.E2(data.z), dtype=float))
++    return (E * chi) / (data.e_fid * data.chi_fid)
++
++
++class GrowthFit(namedtuple("GrowthFit", "lnL chi2_min sigma8 sigma8_err omega_m_phys A Bd chi2_0 g")):
++    """Result of fs8_fit.  chi2_at(s) is chi^2 for a FIXED amplitude sigma_8,0 = s."""
++    __slots__ = ()
++    def chi2_at(self, s):
++        return self.chi2_0 - 2.0 * s * self.Bd + s * s * self.A
++
++
++def fs8_fit(bg, omega_m_phys, derivs, data, k=K_GROWTH_DEFAULT, z_start=Z_GROWTH_INIT, z_bg_max=None):
++    """
++    Growth prediction, AP rescaling and the analytically marginalised fs8 log-likelihood for one background.
++    Returns a GrowthFit, or None if the background is unphysical (the sampler then rejects the point).
++    z_bg_max = highest redshift at which the background exists (FR_Z_INIT for f(R) runs, None for GR).
++    """
++    z_i = z_start if z_bg_max is None else min(z_start, float(z_bg_max))
++    if data.z.max() >= z_i:
++        raise ValueError(f"growth starts at z = {z_i:g} but the fs8 data reach z = {data.z.max():g}; "
++                         f"raise FR_Z_INIT (f(R) runs) or Z_GROWTH_INIT.")
++    N_i = -np.log1p(z_i)
++    n = int(np.ceil(-N_i / N_STEP))
++    N = np.linspace(N_i, 0.0, 2 * n + 1)
++    coef = growth_coefficients(bg, omega_m_phys, derivs, k, N)
++    if coef is None:
++        return None
++    N_nodes, d, dp, ddp = solve_growth(N, *coef)
++    if not (np.all(np.isfinite(d)) and np.all(d > 0.0)):
++        return None
++    shape = CubicHermiteSpline(N_nodes, dp, ddp)(-np.log1p(data.z)) / d[-1]       # delta'(z_i)/delta(0)
++    ratio = ap_ratio(bg, data)
++    if ratio is None:
++        return None
++    g = ratio * shape
++    Cg = data.cinv @ g
++    A = float(g @ Cg)
++    Bd = float(Cg @ data.fs8)
++    if not (np.isfinite(A) and A > 0.0):
++        return None
++    chi2_min = data.chi2_0 - Bd * Bd / A
++    return GrowthFit(lnL=-0.5 * chi2_min - 0.5 * np.log(A), chi2_min=chi2_min, sigma8=Bd / A, sigma8_err=A ** -0.5,
++                     omega_m_phys=omega_m_phys, A=A, Bd=Bd, chi2_0=data.chi2_0, g=g)
++
++
++# ════════════════════════════════════════════════════════════════════════════
++# DERIVED sigma_8 / S_8 FROM A CHAIN
++# ════════════════════════════════════════════════════════════════════════════
++def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_param_theta, n_samples=300, seed=0):
++    """
++    Posterior of sigma_8,0 and S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) from a random subset of chain samples.
++    For each sample theta the conditional posterior of sigma_8,0 is Normal(Bd/A, 1/A) (flat prior), so one draw per
++    sample gives the marginal posterior.  Returns (lines, derived dict).
++    """
++    rng = np.random.default_rng(seed)
++    idx = rng.choice(len(flat_chain), size=min(n_samples, len(flat_chain)), replace=False)
++    s8, S8, chi2 = [], [], []
++    for i in idx:
++        p = flat_chain[i]
++        theta_p, theta_fr = tuple(p[1:1 + n_param_theta]), tuple(p[1 + n_param_theta:])
++        bg = build_background(theta_p, theta_fr)
++        fit = None if bg is None else evaluate(bg, theta_p, theta_fr, fs8_data)
++        if fit is None:
++            continue
++        draw = rng.normal(fit.sigma8, fit.sigma8_err)
++        s8.append(draw)
++        S8.append(draw * np.sqrt(fit.omega_m_phys / 0.3))
++        chi2.append(fit.chi2_min)
++    derived = {"sigma_8,0 (from fs8 data)": np.array(s8),
++               "S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3)": np.array(S8),
++               "chi2_min(fs8 | theta), sigma_8,0 profiled": np.array(chi2)}
++    lines = []
++    for name, arr in derived.items():
++        if len(arr) == 0:
++            lines.append(f"{name}: no valid samples")
++            continue
++        med, lo, hi = np.median(arr), np.percentile(arr, 16), np.percentile(arr, 84)
++        lines.append(f"{name}: {med:.4f} +{hi - med:.4f} / -{med - lo:.4f}   ({len(arr)} samples)")
++    lines.append(f"fs8 data: N = {len(fs8_data.z)} points, z = {fs8_data.z.min():g}-{fs8_data.z.max():g}; "
++                 f"sigma_8,0 is set by these data alone (no CMB normalisation).")
++    return lines, derived
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/likelihood.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/likelihood.py
+index 3de802d..52b7452 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/likelihood.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/likelihood.py
+@@ -28,6 +28,7 @@ from scipy.linalg import cho_solve
+ import data_loader as dl
+ import parameterisations as P
+ import fR
++import growth
+ 
+ 
+ def mu_theory(z_arr, E2_of_z, H0, n_grid=600):
+@@ -137,12 +138,39 @@ def make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha
+     return build
+ 
+ 
++def make_growth_evaluator(parameterisation, fr_model, fr_z_init, omega_m_anchor=0.3, fr_fixed=None,
++                          k=growth.K_GROWTH_DEFAULT, z_start=growth.Z_GROWTH_INIT):
++    """
++    Returns evaluate(bg, theta_p, theta_fR, fs8_data) -> growth.GrowthFit (or None if the background is unphysical).
++    Shared by the likelihood and by the derived sigma_8 / S_8 summary in main.py.  theta_p / theta_fR are the SAMPLED
++    parameters, exactly as for make_background_builder.  Needs a parameterisation with conserved matter.
++    """
++    pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
++    omega_m_func = pcfg["omega_m_func"]
++    if omega_m_func is None:
++        ok = [kname for kname, v in P.PARAMETERISATION_REGISTRY.items() if v["omega_m_func"] is not None]
++        raise ValueError(f"Parameterisation '{parameterisation}' has no conserved-matter Omega_m, so the growth equation "
++                         f"(which needs rho_m ~ a^-3) is not defined for it. Compatible: {ok}")
++    derivs_of = _get_fr_config(fr_model)["derivs"]
++    expand, _ = make_theta_expander(parameterisation, fr_model, omega_m_anchor)
++    expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
++    z_bg_max = None if derivs_of is None else fr_z_init
++
++    def evaluate(bg, theta_p, theta_fr, fs8_data):
++        om_bg = bg.omega_m if bg.omega_m is not None else omega_m_func(expand(theta_p))
++        derivs = None if derivs_of is None else derivs_of(expand_fr(theta_fr))
++        return growth.fs8_fit(bg, om_bg / bg.u0, derivs, fs8_data, k=k, z_start=z_start, z_bg_max=z_bg_max)
++    return evaluate
++
++
+ def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
+-                       omega_m_anchor=0.3, fr_fixed=None):
++                       omega_m_anchor=0.3, fr_fixed=None, growth_k=None):
+     """
+     Builds a log_posterior(params, ...) closure bound to a specific
+     (parameterisation, f(R) model) pair, so main.py doesn't need to pass them
+     through emcee's args on every call.
++    growth_k: None -> no growth term.  A number (h/Mpc) -> the fs8 likelihood of growth.py is added whenever the
++    trailing argument fs8_data of log_posterior is not None (sigma_8,0 is marginalised analytically: sampled vector unchanged).
+     """
+     pcfg = P.PARAMETERISATION_REGISTRY[parameterisation]
+     fcfg = _get_fr_config(fr_model)
+@@ -152,8 +180,10 @@ def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_
+     expand_fr, _ = fR.make_fr_expander(fr_model, fr_fixed)
+     build = make_background_builder(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_z_init,
+                                     omega_m_anchor, fr_fixed)
++    evaluate_growth = (None if growth_k is None else
++                       make_growth_evaluator(parameterisation, fr_model, fr_z_init, omega_m_anchor, fr_fixed, k=growth_k))
+ 
+-    def log_posterior(params, z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets):
++    def log_posterior(params, z_cmb, mu_obs, C_fac, Cinv_ones, scalar_denom, hz_datasets, fs8_data=None):
+         H0 = params[0]
+         theta_p = tuple(params[1:1 + n_p])
+         theta_fr = tuple(params[1 + n_p:])
+@@ -187,6 +217,15 @@ def make_log_posterior(parameterisation, fr_model, fixed_delta, fixed_alpha, fr_
+                 return -np.inf
+             ll += -0.5 * np.sum(((H_obs - H0 * np.sqrt(E2)) / sigma_H) ** 2)
+ 
++        # Growth rate f*sigma_8(z): linear growth ODE + AP rescaling, sigma_8,0 marginalised (growth.py)
++        if fs8_data is not None:
++            if evaluate_growth is None:
++                raise ValueError("fs8_data was passed but the log-posterior was built with growth_k=None")
++            fit = evaluate_growth(bg, theta_p, theta_fr, fs8_data)
++            if fit is None:
++                return -np.inf
++            ll += fit.lnL
++
+         return lp + ll
+ 
+     return log_posterior
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/04_diagnostics/check_growth.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/04_diagnostics/check_growth.py
+new file mode 100644
+index 0000000..20eb680
+--- /dev/null
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/04_diagnostics/check_growth.py
+@@ -0,0 +1,154 @@
++# check_growth.py
++"""
++Self-tests of growth.py (growth ODE, G_eff, AP rescaling, sigma_8 marginalisation, Gold-2017 data).
++
++    python 04_diagnostics/check_growth.py
++
++Every check prints PASS / FAIL with the measured number.  The last block reproduces two chi^2 values quoted in
++Nesseris, Pantazis & Perivolaropoulos (2017) as an end-to-end test of the data file + AP rescaling + growth solver.
++"""
++
++# Resolve the project root so scripts work after being moved into workflow folders.
++import sys as _sys
++from pathlib import Path as _Path
++_PROJECT_ROOT = _Path(__file__).resolve()
++while not (_PROJECT_ROOT / "project_paths.py").is_file() and _PROJECT_ROOT != _PROJECT_ROOT.parent:
++    _PROJECT_ROOT = _PROJECT_ROOT.parent
++if str(_PROJECT_ROOT) not in _sys.path:
++    _sys.path.insert(0, str(_PROJECT_ROOT))
++from project_paths import configure_import_paths
++PROJECT_ROOT = configure_import_paths()
++
++import numpy as np
++from scipy.special import hyp2f1
++from scipy.integrate import trapezoid
++
++import data_loader as dl
++import fR
++import growth
++
++FAILS = []
++
++
++def report(name, value, tol, fmt=".2e"):
++    ok = bool(abs(value) <= tol)
++    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {value:{fmt}}   (tolerance {tol:g})")
++    if not ok:
++        FAILS.append(name)
++
++
++def lcdm_bg(om):
++    return fR.Background(lambda z: om * (1.0 + np.asarray(z, dtype=float)) ** 3 + 1.0 - om, 1.0)
++
++
++def run_growth(bg, om_phys, derivs=None, k=0.1, z_start=10.0):
++    """(N_nodes, delta, delta', delta'') using the production code path."""
++    N_i = -np.log1p(z_start)
++    n = int(np.ceil(-N_i / growth.N_STEP))
++    N = np.linspace(N_i, 0.0, 2 * n + 1)
++    A, B = growth.growth_coefficients(bg, om_phys, derivs, k, N)
++    return growth.solve_growth(N, A, B)
++
++
++def delta_lcdm_exact(a, om):
++    """Growing mode of the Lambda CDM growth equation (Silveira & Waga; eq. 2.2 of Nesseris et al. 2017, w = -1)."""
++    return a * hyp2f1(1.0 / 3.0, 1.0, 11.0 / 6.0, a ** 3 * (1.0 - 1.0 / om))
++
++
++# ───────────────────────────────────────────────────────────────────────────
++print("1. Lambda CDM growth vs the exact hypergeometric solution")
++om = 0.3
++Nn, d, dp, _ = run_growth(lcdm_bg(om), om)
++a = np.exp(Nn)
++ex = delta_lcdm_exact(a, om)
++h = 1e-5
++f_ex = (np.log(delta_lcdm_exact(a * np.exp(h), om)) - np.log(delta_lcdm_exact(a * np.exp(-h), om))) / (2 * h)
++sel = (1.0 / a - 1.0) < 1.5      # the fs8 data live at z <= 1.4; the start at z = 10 leaves a decaying-mode transient above that
++report("max |delta(a)/delta(1) - exact|, z < 1.5", np.max(np.abs((d / d[-1] - ex / ex[-1])[sel])), 1e-5)
++report("max |f(z) - exact|, z < 1.5", np.max(np.abs((dp / d - f_ex)[sel])), 1e-5)
++
++print("2. Einstein-de Sitter: delta = a, f = 1")
++bg = fR.Background(lambda z: (1.0 + np.asarray(z, dtype=float)) ** 3, 1.0)
++Nn, d, dp, _ = run_growth(bg, 1.0)
++# the remaining ~1e-8 is the RK4 truncation error, which scales as N_STEP^4 (see test 6)
++report("max |delta/a - 1|  (normalised at start)", np.max(np.abs(d / np.exp(Nn) / (d[0] / np.exp(Nn[0])) - 1.0)), 1e-7)
++report("max |f - 1|", np.max(np.abs(dp / d - 1.0)), 1e-7)
++
++print("3. Constant G_eff = 4/3 G (q -> infinity) in a matter era: f = p = (-1/2 + sqrt(1/4 + 8))/2")
++big = (None, lambda R: 1.0 + 0.0 * R, lambda R: 1e30 + 0.0 * R, None)
++Nn, d, dp, _ = run_growth(bg, 1.0, derivs=big)
++p_exact = 0.5 * (-0.5 + np.sqrt(0.25 + 8.0))
++report("max |f - p|", np.max(np.abs(dp / d - p_exact)), 1e-7)
++
++print("4. f(R) code path with f_RR = 0 reproduces the GR path exactly")
++gr_like = (None, lambda R: 1.0 + 0.0 * R, lambda R: 0.0 * R, None)
++bgl = lcdm_bg(0.3)
++bgl.u0, bgl.omega_m = 1.0, 0.3
++_, d_gr, _, _ = run_growth(bgl, 0.3, derivs=None)
++bg_f = fR.Background(bgl.E2, 1.0, 0.3, None, None, lambda z: -3.0 * 0.3 * (1.0 + np.asarray(z, dtype=float)) ** 3)
++_, d_fr, _, _ = run_growth(bg_f, 0.3, derivs=gr_like)
++report("max |delta_fR/delta_GR - 1|", np.max(np.abs(d_fr / d_gr - 1.0)), 1e-10)
++
++print("5. Closed-form d u/dN (R_lambda_R2 / starobinsky) vs finite difference of E^2")
++for name, Lam, al in (("R_lambda_R2", 2.1, 5e-5), ("starobinsky", 0.0, 5e-5)):
++    bgs, why = (fR._background_R_lambda_R2(0.3, (Lam, al), 2.5) if name == "R_lambda_R2"
++                else fR._background_starobinsky(0.3, (al,), 2.5))
++    zz = np.linspace(0.01, 2.4, 50)
++    hN = 1e-5
++    u = lambda z: bgs.u0 * bgs.E2(z)
++    fd = (u(np.expm1(-(-np.log1p(zz) + hN))) - u(np.expm1(-(-np.log1p(zz) - hN)))) / (2 * hN)
++    report(f"{name}: max |dudN/fd - 1|", np.max(np.abs(bgs.dudN(zz) / fd - 1.0)), 1e-7)
++
++print("6. Numerical convergence: RK4 step halving (Hu-Sawicki ODE background, scale-dependent G_eff)")
++Lam, b = 2.1, 0.1
++derivs = fR._derivs_hu_sawicki((Lam, b))
++ics = fR._ics_hu_sawicki(0.3, (Lam, b), 10.0)
++bg_hs = fR.solve_background(None, 0.3, derivs, 10.0, ics=ics, rtol=1e-9, method="Radau", max_rhs_evals=20000)
++data = dl.load_fs8_data()
++old = growth.N_STEP
++growth.N_STEP = 0.01
++f1 = growth.fs8_fit(bg_hs, 0.3 / bg_hs.u0, derivs, data, z_bg_max=10.0)
++growth.N_STEP = 0.005
++f2 = growth.fs8_fit(bg_hs, 0.3 / bg_hs.u0, derivs, data, z_bg_max=10.0)
++growth.N_STEP = old
++report("max |g(N_STEP=0.01)/g(0.005) - 1|", np.max(np.abs(f1.g / f2.g - 1.0)), 1e-6)
++print(f"      (Hu-Sawicki b = {b}, k = 0.1 h/Mpc: sigma_8,0 = {f1.sigma8:.4f}, chi2_min = {f1.chi2_min:.2f})")
++
++print("7. Initial-condition error: Lambda CDM-like closed-form f(R) started at z = 2.5 vs the exact solution")
++bgs, _ = fR._background_R_lambda_R2(0.3, (2.1, 1e-9), 2.5)
++om_phys = 0.3 / bgs.u0
++Nn, d, dp, _ = run_growth(bgs, om_phys, derivs=fR._derivs_R_lambda_R2((2.1, 1e-9)), z_start=2.5)
++a = np.exp(Nn)
++ex = delta_lcdm_exact(a, om_phys)
++zsel = (1.0 / a - 1.0) < 1.5
++f_ex = (np.log(delta_lcdm_exact(a * np.exp(1e-5), om_phys)) - np.log(delta_lcdm_exact(a * np.exp(-1e-5), om_phys))) / 2e-5
++report("max |delta(a)/delta(1) - exact|, z < 1.5 (data range)", np.max(np.abs((d / d[-1] - ex / ex[-1])[zsel])), 1e-3)
++report("max |f - exact|, z < 1.5 (data range)", np.max(np.abs((dp / d - f_ex)[zsel])), 5e-3)
++print("      (this is the cost of starting at z = 2.5, the limit of the closed-form backgrounds; models whose background reaches")
++print("       z = 10 start there and have ~1e-6 error.  Data errors on fs8 are >= 3.8 %, so ~0.2 % is not the limiting error.)")
++
++print("8. Analytic marginalisation over sigma_8,0 vs brute-force integration")
++fit = growth.fs8_fit(lcdm_bg(0.3), 0.3, None, data)
++s = np.linspace(fit.sigma8 - 12 * fit.sigma8_err, fit.sigma8 + 12 * fit.sigma8_err, 200001)
++chi2 = np.array([fit.chi2_at(x) for x in s[::1]])
++integral = trapezoid(np.exp(-0.5 * (chi2 - fit.chi2_min)), s)
++report("ln[ integral / sqrt(2 pi / A) ]", np.log(integral / np.sqrt(2 * np.pi / fit.A)), 1e-6)
++report("chi2_at(sigma8_hat) - chi2_min", fit.chi2_at(fit.sigma8) - fit.chi2_min, 1e-9)
++
++print("9. AP rescaling: ratio = 1 when the model equals every point's fiducial cosmology")
++dat1 = growth.build_fs8_data(data.z, data.fs8, np.sqrt(np.diag(data.cov)), np.full(len(data.z), 0.3), np.zeros(len(data.z), int))
++r = growth.ap_ratio(lcdm_bg(0.3), dat1)
++report("max |ratio - 1|", np.max(np.abs(r - 1.0)), 1e-10)
++
++print("10. End-to-end: reproduce chi^2 values quoted for the Gold-2017 compilation (Nesseris et al. 2017, sec. III)")
++fit = growth.fs8_fit(lcdm_bg(0.3156), 0.3156, None, data)
++print(f"      Planck15 LCDM (Omega_m = 0.3156, sigma_8 = 0.831): chi2 = {fit.chi2_at(0.831):.2f}   (paper: 22.8)")
++report("chi2 - 22.8", fit.chi2_at(0.831) - 22.8, 0.25, fmt=".2f")
++fit = growth.fs8_fit(lcdm_bg(0.21), 0.21, None, data)
++print(f"      best-fit LCDM (Omega_m = 0.21): chi2 = {fit.chi2_at(0.88):.2f} at sigma_8 = 0.88, profile minimum "
++      f"{fit.chi2_min:.2f} at sigma_8 = {fit.sigma8:.3f}   (paper: 11.8, 0.88)")
++report("chi2 - 11.8", fit.chi2_at(0.88) - 11.8, 0.25, fmt=".2f")
++
++print()
++print("ALL CHECKS PASSED" if not FAILS else f"FAILED: {FAILS}")
++_sys.exit(1 if FAILS else 0)
+diff --git a/readme b/readme
+index 4824a33..6bfac8a 100644
+--- a/readme
++++ b/readme
+@@ -332,12 +332,13 @@ to Python's import path, so sibling modules remain importable after the move.
+                               Legacy plotting entry points
+ 
+   03_data_and_likelihood/
+-      data_loader.py, likelihood.py, datasets/
++      data_loader.py, likelihood.py, growth.py, datasets/
+                               Observational data and likelihood evaluation
+ 
+   04_diagnostics/
+       check_convergence.py    Chain convergence diagnostic
+       check_fR.py             f(R) solver self-tests
++      check_growth.py         growth module self-tests (exact LCDM solution, EdS, AP ratio, published chi^2)
+ 
+   05_results_and_reconstruction/
+       results_io.py           Numerical result exports
+@@ -354,3 +355,45 @@ Examples from the repository root:
+   python 02_plotting/make_plots.py --plots corner traces --models LCDM
+   python 02_plotting/make_plots.py --plots hist --models LCDM wCDM --params H0
+   python 04_diagnostics/check_fR.py
++
++
++================================================================================
++12. GROWTH OF STRUCTURE: f*sigma_8(z)   (growth.py, USE_FS8)
++================================================================================
++Until this section the pipeline used background data only (SNIa, CC, BAO and the "clustering" file, which holds H(z)
++points).  It therefore could not say anything about sigma_8 or S_8.  Set USE_FS8 = True in main.py to add the growth rate.
++
++What is added
++  * Data: 18 f*sigma_8 points, the "Gold-2017" compilation (Nesseris, Pantazis & Perivolaropoulos, PRD 96, 023542),
++    datasets/fs8_gold2017.txt, with the WiggleZ 3x3 covariance and each survey's fiducial Omega_m.
++  * Theory: delta'' + (2 + H'/H) delta' - (3/2) Omega_m(N) (G_eff/G) delta = 0, N = ln a, with
++      GR + parameterisation : G_eff = G
++      f(R)                  : G_eff/G = (1/F)(1 + 4q)/(1 + 3q),  F = f_R,  q = (k/a)^2 f_RR / F
++    q is evaluated at the single scale FS8_K (default 0.1 h/Mpc).  RK4 in ln a, slow-roll growing-mode start.
++  * Observable: f sigma_8 = sigma_8,0 delta'(z)/delta(0), rescaled by the Alcock-Paczynski ratio E chi / (E_fid chi_fid).
++  * sigma_8,0 is NOT sampled: it enters linearly and is marginalised analytically with a flat prior (same trick as M_B).
++    The sampled vector and every plotting / comparison script are unchanged.  The posterior of sigma_8,0 and of
++    S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) is reported in posterior_results.txt (subset of 300 samples).
++  * The run tag gains "+fs8": chain_<tag>_snia+cc+bao+clu+fs8.npy.
++
++Valid combinations
++  * Any parameterisation with conserved matter (LCDM, wCDM, wCDM_fixed_Omega_m, wowaCDM, CPL, JBP, HDE) with FR_MODEL = "GR"
++    or any f(R) model.  IDE, param_Hubble_* and Custom_Universal are rejected (rho_m is not ~ a^-3).
++  * Growth starts at z = min(10, FR_Z_INIT).  The closed-form models (R_lambda_R2, starobinsky) only exist up to FR_Z_INIT = 2.5,
++    so they start there (about 0.2 % error in f at z < 1.5, check_growth.py test 7).  The data reach z = 1.4, so
++    FR_Z_INIT must stay above that.
++
++Limits you must keep in mind when quoting results
++  1. sigma_8,0 comes from the fs8 data alone.  There is no primordial amplitude or CMB transfer function here, so it is not
++     a model prediction and cannot be compared to Planck as a prediction-vs-measurement test of the model, only as an
++     independent growth-data estimate under that model's background and G_eff.
++  2. f(R) results depend on FS8_K.  This is a modelling choice (quasi-static, single scale), not a measured quantity.
++     Run several values before drawing any conclusion about the modified-gravity parameters.
++  3. Dark-energy parameterisations are treated as smooth (no perturbations).
++  4. The AP correction is the first-order rescaling of the compilation paper.  Cross-survey correlations, apart from WiggleZ,
++     are neglected, and the compilation is from 2017 (no final eBOSS / DESI RSD).
++  5. "starobinsky" (no Lambda) cannot accelerate; its background already fits badly (see section 8), so its growth fit is
++     not a meaningful test of f(R) gravity.
++  6. Validation: python 04_diagnostics/check_growth.py.  It checks the exact LCDM hypergeometric solution, Einstein-de Sitter,
++     the constant-G_eff power law, the GR limit of the f(R) code path, RK4 convergence, the analytic marginalisation, and it
++     reproduces the published chi^2 values 22.8 (Planck15 LCDM) and 11.8 (best-fit LCDM) of the compilation paper.

@@ -1,7 +1,7 @@
 ==========================================================
 MCMC POSTERIOR STATISTICAL RESULTS
 Model Frame    : LCDM
-Active Datasets: snia+cc+bao+clu
+Active Datasets: snia+cc+bao+clu+fs8
   SNIa (Pantheon+SH0ES) : ON
   CC   (Cosmic Chron.)  : ON
   BAO                   : ON
@@ -9,9 +9,14 @@ Active Datasets: snia+cc+bao+clu
 ==========================================================
 Parameter       | Median     | Upper Error (+1sigma)  | Lower Error (-1sigma) 
 ----------------------------------------------------------
-$H_0$           |    67.3653 |                 0.8123 |                 0.7957
-$\Omega_m$      |     0.3157 |                 0.0135 |                 0.0132
+$H_0$           |    67.6107 |                 0.7513 |                 0.7956
+$\Omega_m$      |     0.3109 |                 0.0131 |                 0.0112
 ----------------------------------------------------------
 Parameterisation : LCDM
 f(R) model       : GR  (f(R) = R: General Relativity; dark energy comes from the parameterisation)
+Growth (f sigma_8, Gold-2017; linear quasi-static growth at k = 0.1 h/Mpc, z_start = min(10, FR_Z_INIT)):
+  sigma_8,0 (from fs8 data): 0.7454 +0.0339 / -0.0270   (300 samples)
+  S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3): 0.7611 +0.0295 / -0.0279   (300 samples)
+  chi2_min(fs8 | theta), sigma_8,0 profiled: 12.9400 +0.2904 / -0.2132   (300 samples)
+  fs8 data: N = 18 points, z = 0.02-1.4; sigma_8,0 is set by these data alone (no CMB normalisation).
 ==========================================================

@@ -31,6 +31,7 @@ DATA_DIR = SCRIPT_DIR
 CC_FILE  = os.path.join(DATA_DIR , "datasets/cc_data.txt")
 BAO_FILE = os.path.join(DATA_DIR ,"datasets/bao_data.txt")
 CLU_FILE = os.path.join(DATA_DIR ,"datasets/clustering_data.txt")
+FS8_FILE = os.path.join(DATA_DIR ,"datasets/fs8_gold2017.txt")
 BAO_KEEP_INDICES = [0, 1, 2, 3, 4, 5]  # Deduplication
 
 def load_pantheon_data():
@@ -68,3 +69,20 @@ def _load_hz_file(filepath, keep_indices=None):
 def load_cc_data(): return _load_hz_file(CC_FILE)
 def load_bao_data(): return _load_hz_file(BAO_FILE, keep_indices=BAO_KEEP_INDICES)
 def load_clustering_data(): return _load_hz_file(CLU_FILE)
+
+def load_fs8_data(filepath=FS8_FILE):
+    """
+    f*sigma_8(z) growth-rate data (Gold-2017, see the file header).  Returns a growth.FS8Data with the covariance
+    (WiggleZ block correlated) and the fiducial-cosmology quantities for the Alcock-Paczynski rescaling.
+    """
+    import growth
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    raw = np.genfromtxt(filepath, comments='#', dtype=None, encoding=None)
+    z   = np.array([r[0] for r in raw], dtype=float)
+    fs8 = np.array([r[1] for r in raw], dtype=float)
+    sig = np.array([r[2] for r in raw], dtype=float)
+    om  = np.array([r[3] for r in raw], dtype=float)
+    blk = np.array([r[4] for r in raw], dtype=int)
+    names = [str(r[5]) for r in raw]
+    return growth.build_fs8_data(z, fs8, sig, om, blk, names)
