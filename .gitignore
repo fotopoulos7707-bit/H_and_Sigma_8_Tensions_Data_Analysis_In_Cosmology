@@ -9,3 +9,7 @@ chain_*.npy
 **/chain_*.npy
 
 # Generated figures and run outputs
+
+# Derived growth quantities (sigma_8,0, S_8) written next to the chains
+derived_*.npz
+**/derived_*.npz

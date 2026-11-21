@@ -267,16 +267,22 @@ def fs8_fit(bg, omega_m_phys, derivs, data, k=K_GROWTH_DEFAULT, z_start=Z_GROWTH
 # ════════════════════════════════════════════════════════════════════════════
 # DERIVED sigma_8 / S_8 FROM A CHAIN
 # ════════════════════════════════════════════════════════════════════════════
-def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_param_theta, n_samples=300, seed=0):
+DERIVED_NAMES = ("sigma_8,0", "S_8", "chi2_min_fs8")
+
+
+def derived_sigma8_chain(flat_chain, build_background, evaluate, fs8_data, n_param_theta, max_samples=20000, seed=0):
     """
-    Posterior of sigma_8,0 and S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) from a random subset of chain samples.
-    For each sample theta the conditional posterior of sigma_8,0 is Normal(Bd/A, 1/A) (flat prior), so one draw per
-    sample gives the marginal posterior.  Returns (lines, derived dict).
+    sigma_8,0, S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) and the profiled fs8 chi^2 for the chain rows.
+    For each row theta the conditional posterior of sigma_8,0 is Normal(Bd/A, 1/A) (flat prior), so ONE draw per row gives
+    the marginal posterior.  If the chain has more than max_samples rows, every ceil(n/max_samples)-th row is used.
+    Returns (index, derived): index = rows of flat_chain used, derived = array (len(index), 3) with columns DERIVED_NAMES,
+    NaN where the background or growth solve failed.
     """
     rng = np.random.default_rng(seed)
-    idx = rng.choice(len(flat_chain), size=min(n_samples, len(flat_chain)), replace=False)
-    s8, S8, chi2 = [], [], []
-    for i in idx:
+    step = max(1, int(np.ceil(len(flat_chain) / max_samples)))
+    index = np.arange(0, len(flat_chain), step)
+    derived = np.full((len(index), 3), np.nan)
+    for j, i in enumerate(index):
         p = flat_chain[i]
         theta_p, theta_fr = tuple(p[1:1 + n_param_theta]), tuple(p[1 + n_param_theta:])
         bg = build_background(theta_p, theta_fr)
@@ -284,14 +290,18 @@ def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_p
         if fit is None:
             continue
         draw = rng.normal(fit.sigma8, fit.sigma8_err)
-        s8.append(draw)
-        S8.append(draw * np.sqrt(fit.omega_m_phys / 0.3))
-        chi2.append(fit.chi2_min)
-    derived = {"sigma_8,0 (from fs8 data)": np.array(s8),
-               "S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3)": np.array(S8),
-               "chi2_min(fs8 | theta), sigma_8,0 profiled": np.array(chi2)}
+        derived[j] = (draw, draw * np.sqrt(fit.omega_m_phys / 0.3), fit.chi2_min)
+    return index, derived
+
+
+def summarise_derived(derived, fs8_data):
+    """Text lines (median, 16th and 84th percentile) for the columns of derived_sigma8_chain."""
+    labels = ("sigma_8,0 (from fs8 data)", "S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3)",
+              "chi2_min(fs8 | theta), sigma_8,0 profiled")
     lines = []
-    for name, arr in derived.items():
+    for col, name in enumerate(labels):
+        arr = derived[:, col]
+        arr = arr[np.isfinite(arr)]
         if len(arr) == 0:
             lines.append(f"{name}: no valid samples")
             continue
@@ -299,4 +309,16 @@ def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_p
         lines.append(f"{name}: {med:.4f} +{hi - med:.4f} / -{med - lo:.4f}   ({len(arr)} samples)")
     lines.append(f"fs8 data: N = {len(fs8_data.z)} points, z = {fs8_data.z.min():g}-{fs8_data.z.max():g}; "
                  f"sigma_8,0 is set by these data alone (no CMB normalisation).")
-    return lines, derived
+    return lines
+
+
+def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_param_theta, n_samples=300, seed=0):
+    """Summary lines from a subset of the chain (kept for scripts written against patch 1).  Returns (lines, derived)."""
+    index, derived = derived_sigma8_chain(flat_chain, build_background, evaluate, fs8_data, n_param_theta,
+                                          max_samples=n_samples, seed=seed)
+    return summarise_derived(derived, fs8_data), {n: derived[:, c] for c, n in enumerate(DERIVED_NAMES)}
+
+
+def derived_file_name(tag, run_mode):
+    """File written next to the chain: derived_<tag>_<run_mode>.npz  (does not start with 'chain_': not mistaken for a chain)."""
+    return f"derived_{tag}_{run_mode}.npz"

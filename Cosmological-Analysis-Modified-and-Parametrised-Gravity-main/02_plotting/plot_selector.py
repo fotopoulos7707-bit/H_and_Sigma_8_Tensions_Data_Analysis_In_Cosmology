@@ -107,6 +107,17 @@ def _needs_custom_hubble(tag, cfg):
         return f"only defined for {', '.join(CUSTOM_HUBBLE_MODELS)}"
 
 
+def _plot_growth(ctx, tag, chain, cfg):
+    got = plotting.load_derived(ctx.root, tag, ctx.run_mode)
+    if got is None:
+        raise PlotSkipped(f"no derived growth file for '{tag}' / '{ctx.run_mode}': run main.py with USE_FS8 = True "
+                          f"(it writes derived_<tag>_<mode>.npz next to the chain)")
+    index, derived, _ = got
+    if index.max() >= len(chain):
+        raise PlotSkipped("derived file does not match this chain (different length): rerun main.py")
+    return plotting.plot_growth(chain, cfg["labels"], index, derived, tag, ctx.model_dir(tag), ctx.run_mode)
+
+
 PLOTS = {s.key: s for s in [
     PlotSpec("corner", "model", "Corner plot of all sampled parameters",
              lambda ctx, tag, chain, cfg: plotting.plot_corner(chain, cfg["labels"], tag, ctx.model_dir(tag), ctx.run_mode)),
@@ -121,6 +132,7 @@ PLOTS = {s.key: s for s in [
              lambda ctx, tag, chain, cfg: plotting.plot_and_save_omega_components(chain, tag, ctx.model_dir(tag), ctx.run_mode,
                                                                                   ctx.fixed_delta, ctx.fixed_alpha),
              applies=_needs_custom_hubble),
+    PlotSpec("growth", "model", "Corner + 1D posteriors incl. derived sigma_8,0 and S_8 (needs a USE_FS8 run)", _plot_growth),
     PlotSpec("hist", "comparison", "1D posterior overlay, one figure per chosen parameter (params)", cp.plot_hist),
     PlotSpec("box", "comparison", "Median +- 1 sigma box plot, one panel per chosen parameter (params)", cp.plot_box),
     PlotSpec("violin", "comparison", "Violin plot, one panel per chosen parameter (params)", cp.plot_violin),

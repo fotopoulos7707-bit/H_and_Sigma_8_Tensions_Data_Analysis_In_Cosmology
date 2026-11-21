@@ -64,15 +64,16 @@ USE_CLUSTER = True   # Galaxy Clustering H(z)
 USE_FS8     = True  # Growth rate f*sigma_8(z), Gold-2017 (18 pts, growth.py).  Adds the linear growth equation; sigma_8,0 is
                          # marginalised analytically (sampled vector unchanged) and reported as a DERIVED quantity.  Needs a
                          # parameterisation with conserved matter.  See readme section 12 for the assumptions.
+FS8_DERIVED_MAX = 20000  # derived sigma_8,0 / S_8 are computed for at most this many chain rows (every n-th row beyond that)
 FS8_K       = 0.1    # h/Mpc: the single comoving scale at which the scale-dependent f(R) G_eff is evaluated (modelling choice!)
 # ────────────────────────────────────────────────────────────────────────────
 
 # ── Graphs made at the end of the run ───────────────────────────────────────
-# Per-model plots: "corner", "traces", "potential", "omega_components", or "model" for all four.
+# Per-model plots: "corner", "traces", "potential", "omega_components", "growth" (sigma_8,0 / S_8, needs USE_FS8), or "model" for all.
 # Plots that do not apply to the chosen model (e.g. "potential" for an f(R) run) are skipped with a message.
 # [] = no graphs (numbers and chain are still saved).  Comparison plots (violin, box, hubble, contours, ...)
 # need several chains: make them afterwards with  python make_plots.py  (interactive menu or --plots).
-PLOTS        = ["corner", "potential", "omega_components"]   # default = what this script always did
+PLOTS        = ["corner", "potential", "omega_components", "growth"]   # "growth" needs USE_FS8 (otherwise skipped with a message)
 SHOW_FIGURES = True      # open the figure windows when finished; False = only write the PDFs
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ if not _active:
 RUN_MODE = "+".join(_active)   # e.g. "snia+cc+bao", "cc+bao", "snia"
 # ────────────────────────────────────────────────────────────────────────────
 
-N_WALKERS, N_BURNIN, N_STEPS = 64, 20, 100
+N_WALKERS, N_BURNIN, N_STEPS = 64, 200, 5000
 N_PROCESSES = min(8, os.cpu_count() or 1)   # worker processes for emcee; 1 = serial.  Ryzen 7 9700X: 8 physical cores.
                                             # emcee updates half the walkers at a time, so useful workers <= N_WALKERS/2.
 RANDOM_SEED = None                          # int -> reproducible chain (same result for any N_PROCESSES); None -> random
@@ -278,13 +279,17 @@ if __name__ == "__main__":
                 extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
                                 "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
     if USE_FS8:
-        print("\nDeriving sigma_8,0 and S_8 from the growth data for a subset of samples...")
+        print("\nDeriving sigma_8,0 and S_8 from the growth data for the chain samples...")
         _build = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
                                          FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
         _eval = make_growth_evaluator(PARAMETERISATION, FR_MODEL, FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, k=FS8_K)
-        fs8_lines, _ = growth.derived_sigma8_summary(flat_chain, _build, _eval, fs8_data, n_param_theta)
+        fs8_index, fs8_derived = growth.derived_sigma8_chain(flat_chain, _build, _eval, fs8_data, n_param_theta,
+                                                             max_samples=FS8_DERIVED_MAX)
+        # rows of the chain used + their derived values; read by the "growth" plot (plot_selector.py)
+        np.savez(os.path.join(chain_dir, growth.derived_file_name(RUN_TAG, RUN_MODE)), index=fs8_index, derived=fs8_derived,
+                 names=np.array(growth.DERIVED_NAMES), k=FS8_K)
         extra_lines += [f"Growth (f sigma_8, Gold-2017; linear quasi-static growth at k = {FS8_K:g} h/Mpc, z_start = "
-                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in fs8_lines]
+                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in growth.summarise_derived(fs8_derived, fs8_data)]
     write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
                              USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
                              extra_lines=extra_lines)

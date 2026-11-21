@@ -1,0 +1,234 @@
+diff --git a/.gitignore b/.gitignore
+index 2a726b9..927d18f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -9,3 +9,7 @@ chain_*.npy
+ **/chain_*.npy
+ 
+ # Generated figures and run outputs
++
++# Derived growth quantities (sigma_8,0, S_8) written next to the chains
++derived_*.npz
++**/derived_*.npz
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
+index 1ba5bba..5bec242 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/01_run_configuration/main.py
+@@ -64,15 +64,16 @@ USE_CLUSTER = True   # Galaxy Clustering H(z)
+ USE_FS8     = True  # Growth rate f*sigma_8(z), Gold-2017 (18 pts, growth.py).  Adds the linear growth equation; sigma_8,0 is
+                          # marginalised analytically (sampled vector unchanged) and reported as a DERIVED quantity.  Needs a
+                          # parameterisation with conserved matter.  See readme section 12 for the assumptions.
++FS8_DERIVED_MAX = 20000  # derived sigma_8,0 / S_8 are computed for at most this many chain rows (every n-th row beyond that)
+ FS8_K       = 0.1    # h/Mpc: the single comoving scale at which the scale-dependent f(R) G_eff is evaluated (modelling choice!)
+ # ────────────────────────────────────────────────────────────────────────────
+ 
+ # ── Graphs made at the end of the run ───────────────────────────────────────
+-# Per-model plots: "corner", "traces", "potential", "omega_components", or "model" for all four.
++# Per-model plots: "corner", "traces", "potential", "omega_components", "growth" (sigma_8,0 / S_8, needs USE_FS8), or "model" for all.
+ # Plots that do not apply to the chosen model (e.g. "potential" for an f(R) run) are skipped with a message.
+ # [] = no graphs (numbers and chain are still saved).  Comparison plots (violin, box, hubble, contours, ...)
+ # need several chains: make them afterwards with  python make_plots.py  (interactive menu or --plots).
+-PLOTS        = ["corner", "potential", "omega_components"]   # default = what this script always did
++PLOTS        = ["corner", "potential", "omega_components", "growth"]   # "growth" needs USE_FS8 (otherwise skipped with a message)
+ SHOW_FIGURES = True      # open the figure windows when finished; False = only write the PDFs
+ # ────────────────────────────────────────────────────────────────────────────
+ 
+@@ -278,13 +279,17 @@ if __name__ == "__main__":
+                 extra_lines += ["  WARNING: background is NOT converged w.r.t. FR_Z_INIT -> results depend on the arbitrary",
+                                 "           starting redshift (no GR-like early attractor for this model/parameters). Do not trust them."]
+     if USE_FS8:
+-        print("\nDeriving sigma_8,0 and S_8 from the growth data for a subset of samples...")
++        print("\nDeriving sigma_8,0 and S_8 from the growth data for the chain samples...")
+         _build = make_background_builder(PARAMETERISATION, FR_MODEL, FIXED_DELTA, FIXED_ALPHA, FR_Z_INIT,
+                                          FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS)
+         _eval = make_growth_evaluator(PARAMETERISATION, FR_MODEL, FR_Z_INIT, FR_OMEGA_M_ANCHOR, FR_FIXED_PARAMS, k=FS8_K)
+-        fs8_lines, _ = growth.derived_sigma8_summary(flat_chain, _build, _eval, fs8_data, n_param_theta)
++        fs8_index, fs8_derived = growth.derived_sigma8_chain(flat_chain, _build, _eval, fs8_data, n_param_theta,
++                                                             max_samples=FS8_DERIVED_MAX)
++        # rows of the chain used + their derived values; read by the "growth" plot (plot_selector.py)
++        np.savez(os.path.join(chain_dir, growth.derived_file_name(RUN_TAG, RUN_MODE)), index=fs8_index, derived=fs8_derived,
++                 names=np.array(growth.DERIVED_NAMES), k=FS8_K)
+         extra_lines += [f"Growth (f sigma_8, Gold-2017; linear quasi-static growth at k = {FS8_K:g} h/Mpc, z_start = "
+-                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in fs8_lines]
++                        f"min({growth.Z_GROWTH_INIT:g}, FR_Z_INIT)):"] + ["  " + ln for ln in growth.summarise_derived(fs8_derived, fs8_data)]
+     write_posterior_summary(flat_chain, model_config, RUN_TAG, RUN_MODE, model_output_dir,
+                              USE_SNIA, USE_CC, USE_BAO, USE_CLUSTER, FIXED_DELTA, FIXED_ALPHA,
+                              extra_lines=extra_lines)
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plot_selector.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plot_selector.py
+index 849084e..9cb9860 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plot_selector.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plot_selector.py
+@@ -107,6 +107,17 @@ def _needs_custom_hubble(tag, cfg):
+         return f"only defined for {', '.join(CUSTOM_HUBBLE_MODELS)}"
+ 
+ 
++def _plot_growth(ctx, tag, chain, cfg):
++    got = plotting.load_derived(ctx.root, tag, ctx.run_mode)
++    if got is None:
++        raise PlotSkipped(f"no derived growth file for '{tag}' / '{ctx.run_mode}': run main.py with USE_FS8 = True "
++                          f"(it writes derived_<tag>_<mode>.npz next to the chain)")
++    index, derived, _ = got
++    if index.max() >= len(chain):
++        raise PlotSkipped("derived file does not match this chain (different length): rerun main.py")
++    return plotting.plot_growth(chain, cfg["labels"], index, derived, tag, ctx.model_dir(tag), ctx.run_mode)
++
++
+ PLOTS = {s.key: s for s in [
+     PlotSpec("corner", "model", "Corner plot of all sampled parameters",
+              lambda ctx, tag, chain, cfg: plotting.plot_corner(chain, cfg["labels"], tag, ctx.model_dir(tag), ctx.run_mode)),
+@@ -121,6 +132,7 @@ PLOTS = {s.key: s for s in [
+              lambda ctx, tag, chain, cfg: plotting.plot_and_save_omega_components(chain, tag, ctx.model_dir(tag), ctx.run_mode,
+                                                                                   ctx.fixed_delta, ctx.fixed_alpha),
+              applies=_needs_custom_hubble),
++    PlotSpec("growth", "model", "Corner + 1D posteriors incl. derived sigma_8,0 and S_8 (needs a USE_FS8 run)", _plot_growth),
+     PlotSpec("hist", "comparison", "1D posterior overlay, one figure per chosen parameter (params)", cp.plot_hist),
+     PlotSpec("box", "comparison", "Median +- 1 sigma box plot, one panel per chosen parameter (params)", cp.plot_box),
+     PlotSpec("violin", "comparison", "Violin plot, one panel per chosen parameter (params)", cp.plot_violin),
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plotting.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plotting.py
+index 829fb06..58e61d4 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plotting.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/02_plotting/plotting.py
+@@ -127,6 +127,65 @@ def plot_corner(flat_chain, labels, chosen_model_name, output_dir, run_mode):
+     return fig
+ 
+ 
++# Planck 2018 base-LCDM, TT,TE,EE+lowE+lensing: sigma_8 = 0.811 +- 0.006 (Planck 2018 results VI, abstract; A&A 641, A6).
++# Only sigma_8 is drawn: a published S_8 value was not checked against the paper, so no S_8 band is shown.
++PLANCK18_SIGMA8 = (0.811, 0.006)
++GROWTH_LABELS = [r"$\sigma_{8,0}$", r"$S_8$"]
++
++
++def load_derived(root, tag, run_mode):
++    """(index, derived) written by main.py for this run (growth.derived_file_name), searched in root/chains and root; None if absent."""
++    import growth
++    name = growth.derived_file_name(tag, run_mode)
++    for folder in (os.path.join(root, "chains"), root):
++        path = os.path.join(folder, name)
++        if os.path.isfile(path):
++            z = np.load(path)
++            return z["index"], z["derived"], path
++    return None
++
++
++def plot_growth(flat_chain, labels, index, derived, tag, output_dir, run_mode):
++    """
++    Two figures from a USE_FS8 run:
++      growth_corner_<tag>_<mode>.pdf : corner plot of the sampled parameters plus the DERIVED sigma_8,0 and S_8
++      growth_s8_<tag>_<mode>.pdf     : 1D posteriors of sigma_8,0 and S_8 (Planck 2018 sigma_8 band for reference)
++    Rows where the growth solve failed (NaN) are dropped and counted.
++    """
++    ok = np.all(np.isfinite(derived[:, :2]), axis=1)
++    n_bad = int((~ok).sum())
++    if ok.sum() < 50:
++        raise ValueError(f"only {int(ok.sum())} valid derived samples")
++    base = flat_chain[index][ok]
++    s8, S8 = derived[ok, 0], derived[ok, 1]
++    joint = np.column_stack([base, s8, S8])
++
++    fig = corner.corner(joint, labels=list(labels) + GROWTH_LABELS, show_titles=True, quantiles=[0.16, 0.5, 0.84])
++    fig.suptitle(f"Posterior with derived growth quantities: {tag}", y=1.02)
++    path1 = os.path.join(output_dir, f"growth_corner_{tag}_{run_mode}.pdf")
++    fig.savefig(path1, bbox_inches="tight")
++    print(f"Growth corner plot saved: {path1}  ({n_bad} of {len(ok)} rows dropped: failed solve)")
++
++    fig2, axes = plt.subplots(1, 2, figsize=(10, 4))
++    for ax, vals, lab in zip(axes, (s8, S8), GROWTH_LABELS):
++        lo, med, hi = np.percentile(vals, [16, 50, 84])
++        ax.hist(vals, bins=50, density=True, color="tab:blue", alpha=0.6)
++        ax.axvline(med, color="k")
++        ax.axvspan(lo, hi, color="k", alpha=0.12)
++        ax.set_xlabel(lab)
++        ax.set_title(f"{lab} = {med:.3f} +{hi - med:.3f} / -{med - lo:.3f}", fontsize=11)
++        ax.set_yticks([])
++    m, e = PLANCK18_SIGMA8
++    axes[0].axvspan(m - e, m + e, color="tab:red", alpha=0.3, label="Planck 2018 (TT,TE,EE+lowE+lensing)")
++    axes[0].legend(fontsize=8, loc="upper left")
++    fig2.suptitle(f"{tag}   [{run_mode}]   sigma_8,0 set by the f sigma_8 data alone", fontsize=10)
++    fig2.tight_layout()
++    path2 = os.path.join(output_dir, f"growth_s8_{tag}_{run_mode}.pdf")
++    fig2.savefig(path2, bbox_inches="tight")
++    print(f"Growth 1D posterior plot saved: {path2}")
++    return fig
++
++
+ def generate_model_specific_plots(flat_chain, chosen_model_name, model_config, output_dir, run_mode,
+                                    fixed_delta, fixed_alpha):
+     """
+diff --git a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py
+index da71121..655b22a 100644
+--- a/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py
++++ b/Cosmological-Analysis-Modified-and-Parametrised-Gravity-main/03_data_and_likelihood/growth.py
+@@ -267,16 +267,22 @@ def fs8_fit(bg, omega_m_phys, derivs, data, k=K_GROWTH_DEFAULT, z_start=Z_GROWTH
+ # ════════════════════════════════════════════════════════════════════════════
+ # DERIVED sigma_8 / S_8 FROM A CHAIN
+ # ════════════════════════════════════════════════════════════════════════════
+-def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_param_theta, n_samples=300, seed=0):
++DERIVED_NAMES = ("sigma_8,0", "S_8", "chi2_min_fs8")
++
++
++def derived_sigma8_chain(flat_chain, build_background, evaluate, fs8_data, n_param_theta, max_samples=20000, seed=0):
+     """
+-    Posterior of sigma_8,0 and S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) from a random subset of chain samples.
+-    For each sample theta the conditional posterior of sigma_8,0 is Normal(Bd/A, 1/A) (flat prior), so one draw per
+-    sample gives the marginal posterior.  Returns (lines, derived dict).
++    sigma_8,0, S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3) and the profiled fs8 chi^2 for the chain rows.
++    For each row theta the conditional posterior of sigma_8,0 is Normal(Bd/A, 1/A) (flat prior), so ONE draw per row gives
++    the marginal posterior.  If the chain has more than max_samples rows, every ceil(n/max_samples)-th row is used.
++    Returns (index, derived): index = rows of flat_chain used, derived = array (len(index), 3) with columns DERIVED_NAMES,
++    NaN where the background or growth solve failed.
+     """
+     rng = np.random.default_rng(seed)
+-    idx = rng.choice(len(flat_chain), size=min(n_samples, len(flat_chain)), replace=False)
+-    s8, S8, chi2 = [], [], []
+-    for i in idx:
++    step = max(1, int(np.ceil(len(flat_chain) / max_samples)))
++    index = np.arange(0, len(flat_chain), step)
++    derived = np.full((len(index), 3), np.nan)
++    for j, i in enumerate(index):
+         p = flat_chain[i]
+         theta_p, theta_fr = tuple(p[1:1 + n_param_theta]), tuple(p[1 + n_param_theta:])
+         bg = build_background(theta_p, theta_fr)
+@@ -284,14 +290,18 @@ def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_p
+         if fit is None:
+             continue
+         draw = rng.normal(fit.sigma8, fit.sigma8_err)
+-        s8.append(draw)
+-        S8.append(draw * np.sqrt(fit.omega_m_phys / 0.3))
+-        chi2.append(fit.chi2_min)
+-    derived = {"sigma_8,0 (from fs8 data)": np.array(s8),
+-               "S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3)": np.array(S8),
+-               "chi2_min(fs8 | theta), sigma_8,0 profiled": np.array(chi2)}
++        derived[j] = (draw, draw * np.sqrt(fit.omega_m_phys / 0.3), fit.chi2_min)
++    return index, derived
++
++
++def summarise_derived(derived, fs8_data):
++    """Text lines (median, 16th and 84th percentile) for the columns of derived_sigma8_chain."""
++    labels = ("sigma_8,0 (from fs8 data)", "S_8 = sigma_8,0 sqrt(Omega_m,phys/0.3)",
++              "chi2_min(fs8 | theta), sigma_8,0 profiled")
+     lines = []
+-    for name, arr in derived.items():
++    for col, name in enumerate(labels):
++        arr = derived[:, col]
++        arr = arr[np.isfinite(arr)]
+         if len(arr) == 0:
+             lines.append(f"{name}: no valid samples")
+             continue
+@@ -299,4 +309,16 @@ def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_p
+         lines.append(f"{name}: {med:.4f} +{hi - med:.4f} / -{med - lo:.4f}   ({len(arr)} samples)")
+     lines.append(f"fs8 data: N = {len(fs8_data.z)} points, z = {fs8_data.z.min():g}-{fs8_data.z.max():g}; "
+                  f"sigma_8,0 is set by these data alone (no CMB normalisation).")
+-    return lines, derived
++    return lines
++
++
++def derived_sigma8_summary(flat_chain, build_background, evaluate, fs8_data, n_param_theta, n_samples=300, seed=0):
++    """Summary lines from a subset of the chain (kept for scripts written against patch 1).  Returns (lines, derived)."""
++    index, derived = derived_sigma8_chain(flat_chain, build_background, evaluate, fs8_data, n_param_theta,
++                                          max_samples=n_samples, seed=seed)
++    return summarise_derived(derived, fs8_data), {n: derived[:, c] for c, n in enumerate(DERIVED_NAMES)}
++
++
++def derived_file_name(tag, run_mode):
++    """File written next to the chain: derived_<tag>_<run_mode>.npz  (does not start with 'chain_': not mistaken for a chain)."""
++    return f"derived_{tag}_{run_mode}.npz"

@@ -127,6 +127,65 @@ def plot_corner(flat_chain, labels, chosen_model_name, output_dir, run_mode):
     return fig
 
 
+# Planck 2018 base-LCDM, TT,TE,EE+lowE+lensing: sigma_8 = 0.811 +- 0.006 (Planck 2018 results VI, abstract; A&A 641, A6).
+# Only sigma_8 is drawn: a published S_8 value was not checked against the paper, so no S_8 band is shown.
+PLANCK18_SIGMA8 = (0.811, 0.006)
+GROWTH_LABELS = [r"$\sigma_{8,0}$", r"$S_8$"]
+
+
+def load_derived(root, tag, run_mode):
+    """(index, derived) written by main.py for this run (growth.derived_file_name), searched in root/chains and root; None if absent."""
+    import growth
+    name = growth.derived_file_name(tag, run_mode)
+    for folder in (os.path.join(root, "chains"), root):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            z = np.load(path)
+            return z["index"], z["derived"], path
+    return None
+
+
+def plot_growth(flat_chain, labels, index, derived, tag, output_dir, run_mode):
+    """
+    Two figures from a USE_FS8 run:
+      growth_corner_<tag>_<mode>.pdf : corner plot of the sampled parameters plus the DERIVED sigma_8,0 and S_8
+      growth_s8_<tag>_<mode>.pdf     : 1D posteriors of sigma_8,0 and S_8 (Planck 2018 sigma_8 band for reference)
+    Rows where the growth solve failed (NaN) are dropped and counted.
+    """
+    ok = np.all(np.isfinite(derived[:, :2]), axis=1)
+    n_bad = int((~ok).sum())
+    if ok.sum() < 50:
+        raise ValueError(f"only {int(ok.sum())} valid derived samples")
+    base = flat_chain[index][ok]
+    s8, S8 = derived[ok, 0], derived[ok, 1]
+    joint = np.column_stack([base, s8, S8])
+
+    fig = corner.corner(joint, labels=list(labels) + GROWTH_LABELS, show_titles=True, quantiles=[0.16, 0.5, 0.84])
+    fig.suptitle(f"Posterior with derived growth quantities: {tag}", y=1.02)
+    path1 = os.path.join(output_dir, f"growth_corner_{tag}_{run_mode}.pdf")
+    fig.savefig(path1, bbox_inches="tight")
+    print(f"Growth corner plot saved: {path1}  ({n_bad} of {len(ok)} rows dropped: failed solve)")
+
+    fig2, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for ax, vals, lab in zip(axes, (s8, S8), GROWTH_LABELS):
+        lo, med, hi = np.percentile(vals, [16, 50, 84])
+        ax.hist(vals, bins=50, density=True, color="tab:blue", alpha=0.6)
+        ax.axvline(med, color="k")
+        ax.axvspan(lo, hi, color="k", alpha=0.12)
+        ax.set_xlabel(lab)
+        ax.set_title(f"{lab} = {med:.3f} +{hi - med:.3f} / -{med - lo:.3f}", fontsize=11)
+        ax.set_yticks([])
+    m, e = PLANCK18_SIGMA8
+    axes[0].axvspan(m - e, m + e, color="tab:red", alpha=0.3, label="Planck 2018 (TT,TE,EE+lowE+lensing)")
+    axes[0].legend(fontsize=8, loc="upper left")
+    fig2.suptitle(f"{tag}   [{run_mode}]   sigma_8,0 set by the f sigma_8 data alone", fontsize=10)
+    fig2.tight_layout()
+    path2 = os.path.join(output_dir, f"growth_s8_{tag}_{run_mode}.pdf")
+    fig2.savefig(path2, bbox_inches="tight")
+    print(f"Growth 1D posterior plot saved: {path2}")
+    return fig
+
+
 def generate_model_specific_plots(flat_chain, chosen_model_name, model_config, output_dir, run_mode,
                                    fixed_delta, fixed_alpha):
     """
